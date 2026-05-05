@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.12,<4.0"
 # Hard rule: no FastAPI, no SQLAlchemy, no protea-core.
 # This is the slim shipping path for the inference method.
 "protea-contracts" = { path = "../protea-contracts", develop = true }
