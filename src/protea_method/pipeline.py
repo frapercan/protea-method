@@ -8,11 +8,17 @@ prediction dicts. The platform (protea-core) or container caller is
 responsible for materialising the inputs from a DB or bind-mounted
 parquet files.
 
-This module ships unified-KNN mode (single index over all reference
-embeddings). Aspect-separated mode (one KNN per GO aspect) is a
-follow-up; the API takes ``aspect_separated`` and raises
-``NotImplementedError`` for now so the call site can already adopt
-the final signature.
+Two modes are supported via ``PredictConfig.aspect_separated``:
+
+* unified KNN (default): a single KNN index across all reference
+  embeddings, one search per query.
+* aspect-separated KNN: three independent KNN indices (one per GO
+  aspect P / F / C), each restricted to references that have at
+  least one annotation in that aspect; results from all three are
+  merged. This guarantees BPO / MFO / CCO candidates per query even
+  when the globally-nearest neighbours happen to carry annotations
+  in only one or two aspects (which is the dominant cause of the
+  BPO recall ceiling on a unified index).
 """
 
 from __future__ import annotations
@@ -24,7 +30,7 @@ import lightgbm as lgb
 import numpy as np
 
 from protea_method.anc2vec import Anc2VecIndex
-from protea_method.feature_enricher import enrich_v6_features
+from protea_method.feature_enricher import ASPECT_CODES, enrich_v6_features
 from protea_method.knn_search import search_knn
 from protea_method.reranker import apply_reranker
 
@@ -77,6 +83,143 @@ class PredictConfig:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+def _build_go_map(
+    neighbors_per_query: list[list[tuple[str, float]]],
+    annotations: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    """Collect annotations of every neighbour seen in the KNN result."""
+    go_map: dict[str, list[dict[str, Any]]] = {}
+    for hits in neighbors_per_query:
+        for ref_acc, _ in hits:
+            if ref_acc not in go_map:
+                go_map[ref_acc] = list(annotations.get(ref_acc, []))
+    return go_map
+
+
+def _partition_refs_by_aspect(
+    reference_accessions: list[str],
+    reference_embeddings: np.ndarray,
+    annotations: dict[str, list[dict[str, Any]]],
+    go_aspect_map: dict[int, str],
+) -> dict[str, tuple[list[str], np.ndarray]]:
+    """Group reference proteins by the GO aspects of their annotations.
+
+    A reference belongs to aspect ``a`` iff at least one of its
+    annotations resolves to aspect ``a`` via ``go_aspect_map``. The
+    returned mapping has one entry per ``ASPECT_CODES`` letter, each
+    pointing at the filtered ``(accessions, embeddings)`` pair.
+    """
+    per_aspect_idx: dict[str, list[int]] = {a: [] for a in ASPECT_CODES}
+    for ref_idx, ref_acc in enumerate(reference_accessions):
+        seen: set[str] = set()
+        for ann in annotations.get(ref_acc, []):
+            asp = go_aspect_map.get(int(ann["go_term_id"]), "")
+            if asp in per_aspect_idx and asp not in seen:
+                per_aspect_idx[asp].append(ref_idx)
+                seen.add(asp)
+    out: dict[str, tuple[list[str], np.ndarray]] = {}
+    for asp, idx_list in per_aspect_idx.items():
+        if not idx_list:
+            out[asp] = ([], np.zeros((0, reference_embeddings.shape[1]), dtype=np.float32))
+            continue
+        idx_array = np.asarray(idx_list, dtype=np.int64)
+        out[asp] = (
+            [reference_accessions[i] for i in idx_list],
+            reference_embeddings[idx_array],
+        )
+    return out
+
+
+def _aspect_separated_knn(
+    *,
+    query_embeddings: np.ndarray,
+    reference_accessions: list[str],
+    reference_embeddings: np.ndarray,
+    annotations: dict[str, list[dict[str, Any]]],
+    go_aspect_map: dict[int, str],
+    cfg: PredictConfig,
+) -> tuple[
+    dict[str, list[list[tuple[str, float]]]],
+    dict[str, dict[str, list[dict[str, Any]]]],
+]:
+    """Three KNN searches, one per GO aspect, over aspect-filtered refs."""
+    partitioned = _partition_refs_by_aspect(
+        reference_accessions, reference_embeddings, annotations, go_aspect_map,
+    )
+    neighbors_by_aspect: dict[str, list[list[tuple[str, float]]]] = {}
+    go_map_by_aspect: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    n_queries = query_embeddings.shape[0]
+    for aspect, (acc_subset, emb_subset) in partitioned.items():
+        if not acc_subset:
+            neighbors_by_aspect[aspect] = [[] for _ in range(n_queries)]
+            go_map_by_aspect[aspect] = {}
+            continue
+        hits = search_knn(
+            query_embeddings,
+            emb_subset,
+            acc_subset,
+            k=cfg.k,
+            distance_threshold=cfg.distance_threshold,
+            backend=cfg.backend,
+            metric=cfg.metric,
+            pre_normalized=cfg.pre_normalized,
+        )
+        neighbors_by_aspect[aspect] = hits
+        go_map_by_aspect[aspect] = _build_go_map(hits, annotations)
+    return neighbors_by_aspect, go_map_by_aspect
+
+
+def _accumulate_votes(
+    *,
+    query_accessions: list[str],
+    neighbors_by_aspect: dict[str, list[list[tuple[str, float]]]],
+    annotations: dict[str, list[dict[str, Any]]],
+    go_aspect_map: dict[int, str],
+    aspect_separated: bool,
+) -> list[dict[str, Any]]:
+    """Build base prediction dicts (protein, go_term, vote_count, distances).
+
+    In aspect-separated mode, only annotations matching the current
+    KNN's aspect contribute to that aspect's votes; this prevents an
+    aspect-F neighbour's P-annotations from leaking into the F vote
+    pool.
+    """
+    predictions: list[dict[str, Any]] = []
+    for q_idx, q_acc in enumerate(query_accessions):
+        votes: dict[int, dict[str, float]] = {}
+        for aspect_key, neighbors_per_query in neighbors_by_aspect.items():
+            if q_idx >= len(neighbors_per_query):
+                continue
+            for ref_acc, distance in neighbors_per_query[q_idx]:
+                for ann in annotations.get(ref_acc, []):
+                    gtid = int(ann["go_term_id"])
+                    if aspect_separated:
+                        ann_aspect = go_aspect_map.get(gtid, "")
+                        if ann_aspect != aspect_key:
+                            continue
+                    stat = votes.setdefault(
+                        gtid,
+                        {"vote_count": 0.0, "sum_d": 0.0, "min_d": float("inf")},
+                    )
+                    stat["vote_count"] += 1.0
+                    stat["sum_d"] += float(distance)
+                    if float(distance) < stat["min_d"]:
+                        stat["min_d"] = float(distance)
+        for gtid, stat in votes.items():
+            predictions.append(
+                {
+                    "protein_accession": q_acc,
+                    "go_term_id": gtid,
+                    "vote_count": stat["vote_count"],
+                    "min_distance": stat["min_d"],
+                    "mean_distance": stat["sum_d"] / stat["vote_count"],
+                    "distance": stat["min_d"],
+                    "aspect": go_aspect_map.get(gtid, ""),
+                },
+            )
+    return predictions
+
+
 def predict(
     *,
     query_accessions: list[str],
@@ -117,60 +260,42 @@ def predict(
     LAFA container).
     """
     cfg = config or PredictConfig()
-    if cfg.aspect_separated:
-        raise NotImplementedError(
-            "aspect_separated KNN is reserved for a follow-up slice; "
-            "current implementation requires PredictConfig.aspect_separated=False",
-        )
 
     if not query_accessions or query_embeddings.size == 0:
         return []
     if reference_embeddings.size == 0:
         return []
 
-    neighbors_per_query = search_knn(
-        query_embeddings,
-        reference_embeddings,
-        reference_accessions,
-        k=cfg.k,
-        distance_threshold=cfg.distance_threshold,
-        backend=cfg.backend,
-        metric=cfg.metric,
-        pre_normalized=cfg.pre_normalized,
+    if cfg.aspect_separated:
+        neighbors_by_aspect, go_map_by_aspect = _aspect_separated_knn(
+            query_embeddings=query_embeddings,
+            reference_accessions=reference_accessions,
+            reference_embeddings=reference_embeddings,
+            annotations=annotations,
+            go_aspect_map=go_aspect_map,
+            cfg=cfg,
+        )
+    else:
+        neighbors_per_query = search_knn(
+            query_embeddings,
+            reference_embeddings,
+            reference_accessions,
+            k=cfg.k,
+            distance_threshold=cfg.distance_threshold,
+            backend=cfg.backend,
+            metric=cfg.metric,
+            pre_normalized=cfg.pre_normalized,
+        )
+        neighbors_by_aspect = {"": neighbors_per_query}
+        go_map_by_aspect = {"": _build_go_map(neighbors_per_query, annotations)}
+
+    predictions = _accumulate_votes(
+        query_accessions=query_accessions,
+        neighbors_by_aspect=neighbors_by_aspect,
+        annotations=annotations,
+        go_aspect_map=go_aspect_map,
+        aspect_separated=cfg.aspect_separated,
     )
-
-    predictions: list[dict[str, Any]] = []
-    go_map_by_aspect: dict[str, dict[str, list[dict[str, Any]]]] = {"": {}}
-    neighbors_by_aspect: dict[str, list[list[tuple[str, float]]]] = {"": neighbors_per_query}
-
-    for q_idx, q_acc in enumerate(query_accessions):
-        if q_idx >= len(neighbors_per_query):
-            continue
-        votes: dict[int, dict[str, float]] = {}
-        for ref_acc, distance in neighbors_per_query[q_idx]:
-            for ann in annotations.get(ref_acc, []):
-                gtid = int(ann["go_term_id"])
-                stat = votes.setdefault(
-                    gtid, {"vote_count": 0.0, "sum_d": 0.0, "min_d": float("inf")},
-                )
-                stat["vote_count"] += 1.0
-                stat["sum_d"] += float(distance)
-                if float(distance) < stat["min_d"]:
-                    stat["min_d"] = float(distance)
-            go_map_by_aspect[""].setdefault(ref_acc, []).extend(annotations.get(ref_acc, []))
-
-        for gtid, stat in votes.items():
-            predictions.append(
-                {
-                    "protein_accession": q_acc,
-                    "go_term_id": gtid,
-                    "vote_count": stat["vote_count"],
-                    "min_distance": stat["min_d"],
-                    "mean_distance": stat["sum_d"] / stat["vote_count"],
-                    "distance": stat["min_d"],
-                    "aspect": go_aspect_map.get(gtid, ""),
-                },
-            )
 
     if cfg.compute_v6_features and predictions:
         enrich_v6_features(

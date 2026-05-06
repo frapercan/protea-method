@@ -7,7 +7,6 @@ from pathlib import Path
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
-import pytest
 
 from protea_method.anc2vec import Anc2VecIndex
 from protea_method.pipeline import PredictConfig, predict
@@ -108,20 +107,47 @@ def test_predict_short_circuits_on_empty_reference(tmp_path: Path) -> None:
     assert preds == []
 
 
-def test_predict_aspect_separated_not_implemented(tmp_path: Path) -> None:
+def test_predict_aspect_separated_runs_three_knns(tmp_path: Path) -> None:
+    """Aspect-separated mode produces predictions tagged by aspect, with
+    each aspect's votes restricted to that aspect's annotations.
+    """
     qa, qe, ra, re_, anns = _toy_corpus()
-    with pytest.raises(NotImplementedError):
-        predict(
-            query_accessions=qa,
-            query_embeddings=qe,
-            reference_accessions=ra,
-            reference_embeddings=re_,
-            annotations=anns,
-            go_id_map={},
-            go_aspect_map={},
-            config=PredictConfig(aspect_separated=True),
-            anc_idx=_make_anc_idx(tmp_path),
-        )
+    go_id_map = {1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"}
+    go_aspect_map = {1: "F", 2: "P", 3: "C"}
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map=go_id_map,
+        go_aspect_map=go_aspect_map,
+        config=PredictConfig(k=2, aspect_separated=True, compute_v6_features=False),
+        anc_idx=_make_anc_idx(tmp_path),
+    )
+    aspects = {p["aspect"] for p in preds}
+    assert {"F", "P", "C"}.issubset(aspects | {""})
+    for p in preds:
+        gtid = p["go_term_id"]
+        assert p["aspect"] == go_aspect_map[gtid]
+
+
+def test_partition_refs_by_aspect_filters_correctly(tmp_path: Path) -> None:
+    """A reference with only F annotations belongs only to the F bank."""
+    from protea_method.pipeline import _partition_refs_by_aspect
+
+    refs = ["A", "B", "C"]
+    embeddings = np.eye(3, 4, dtype=np.float32)
+    annotations: dict[str, list[dict[str, object]]] = {
+        "A": [{"go_term_id": 1}],  # F only
+        "B": [{"go_term_id": 2}, {"go_term_id": 3}],  # P + C
+        "C": [],
+    }
+    go_aspect_map = {1: "F", 2: "P", 3: "C"}
+    out = _partition_refs_by_aspect(refs, embeddings, annotations, go_aspect_map)
+    assert out["F"][0] == ["A"]
+    assert out["P"][0] == ["B"]
+    assert out["C"][0] == ["B"]
 
 
 def test_predict_skips_v6_when_disabled(tmp_path: Path) -> None:
