@@ -26,6 +26,7 @@ python = ">=3.12,<4.0"
 # This is the slim shipping path for the inference method.
 "protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", branch = "master" }
 numpy = ">=1.24"
+pandas = ">=2.0"
 lightgbm = ">=4.0"
 faiss-cpu = ">=1.7"
 
@@ -34,6 +35,7 @@ pytest = ">=7"
 pytest-cov = ">=4"
 ruff = ">=0.1"
 mypy = ">=1.7"
+pandas-stubs = ">=2.0"
 
 [tool.ruff]
 line-length = 100
@@ -41,12 +43,23 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "RUF"]
-ignore = ["E501"]
+# N806 (uppercase X/y in functions): kept off because the X/y convention
+# is universal in ML code for feature matrix vs label vector.
+# RUF002 (Unicode lookalikes in docstrings): scientific text uses `×`,
+# `→`, `≤` legitimately; ASCII rewrites would obscure meaning.
+ignore = ["E501", "N806", "RUF002"]
 
 [tool.mypy]
 python_version = "3.10"
 strict = true
 warn_unused_ignores = true
+# numpy's generic ``ndarray`` type arguments add a lot of ``Any, Any``
+# bloat without runtime benefit; tighten when ``numpy.typing`` stabilises.
+disallow_any_generics = false
+
+[[tool.mypy.overrides]]
+module = ["lightgbm", "lightgbm.*", "faiss", "faiss.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
