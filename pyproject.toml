@@ -21,10 +21,10 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-# Lowered from 3.12 to 3.10 to match the classifier set; CI matrix
-# tests all three. The library uses `from __future__ import annotations`
-# everywhere so PEP 604 / PEP 585 syntax works on 3.10.
-python = ">=3.10,<4.0"
+# Pinned to 3.12 to match the protea-contracts constraint upstream.
+# Broadening to 3.10/3.11 requires lowering protea-contracts first
+# (its pyproject pins 3.12 too); deferred to a coordinated bump.
+python = ">=3.12,<4.0"
 # Hard rule: no FastAPI, no SQLAlchemy, no protea-core.
 # This is the slim shipping path for the inference method.
 "protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", branch = "master" }
