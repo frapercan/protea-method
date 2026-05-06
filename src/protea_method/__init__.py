@@ -21,11 +21,11 @@ __version__ = "0.0.1"
 
 __all__ = [
     "ALL_FEATURES",
-    "Anc2VecIndex",
     "CATEGORICAL_FEATURES",
     "EMBEDDING_PCA_DIM",
     "LABEL_COLUMN",
     "NUMERIC_FEATURES",
+    "Anc2VecIndex",
     "__version__",
     "apply_reranker",
     "fit_embedding_pca",
