@@ -147,3 +147,25 @@ def test_infer_active_feature_families_full() -> None:
     assert "taxonomy_pair" in families
     assert "anc2vec_neighbor" in families
     assert "emb_pca" in families
+
+
+def test_predict_with_categorical_codes_vocabulary() -> None:
+    """Encode categoricals against a fixed lab vocabulary."""
+    df = _make_df()
+    booster = _train(df)
+    inference_df = df.drop(columns=[LABEL_COLUMN])
+    codes: dict[str, list[str]] = {col: ["a", "b", "c"] for col in CATEGORICAL_FEATURES}
+    scores = predict(booster, inference_df, categorical_codes=codes)
+    assert scores.shape == (len(df),)
+    assert float(scores.min()) >= 0.0
+    assert float(scores.max()) <= 1.0
+
+
+def test_fit_embedding_pca_subsamples_above_max() -> None:
+    """When n > max_fit_samples the function still returns the right shape."""
+    rng = np.random.default_rng(1)
+    embeddings = rng.standard_normal(size=(2_000, 64)).astype(np.float32)
+    mean, components = fit_embedding_pca(embeddings, n_components=8, max_fit_samples=500)
+    assert mean.shape == (64,)
+    assert components.shape == (8, 64)
+
