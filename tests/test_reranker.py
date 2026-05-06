@@ -22,9 +22,14 @@ from protea_method import (
     infer_active_feature_families,
     load_from_bytes,
     model_from_string,
-    predict,
     prepare_dataset,
 )
+
+# `predict` is the booster-scoring helper inside ``reranker``; the
+# package-root ``predict`` is the higher-level orchestrator in
+# ``pipeline`` (different signature). Import the helper via the
+# submodule to avoid the namespace collision.
+from protea_method.reranker import predict
 
 
 def _make_df(n: int = 100, seed: int = 42) -> pd.DataFrame:

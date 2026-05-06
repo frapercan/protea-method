@@ -8,6 +8,7 @@ from protea_method.feature_enricher import (
 )
 from protea_method.knn_search import search_knn
 from protea_method.pca_cache import load_or_fit_pca_state
+from protea_method.pipeline import PredictConfig, predict
 from protea_method.reranker import (
     ALL_FEATURES,
     CATEGORICAL_FEATURES,
@@ -19,12 +20,14 @@ from protea_method.reranker import (
     infer_active_feature_families,
     load_from_bytes,
     model_from_string,
-    predict,
     prepare_dataset,
 )
 
 __version__ = "0.0.1"
 
+# Note: ``predict`` exported from the package root is the high-level
+# pipeline orchestrator. The lower-level booster-scoring helper with
+# the same name is reachable via ``protea_method.reranker.predict``.
 __all__ = [
     "ALL_FEATURES",
     "ASPECT_CODES",
@@ -34,6 +37,7 @@ __all__ = [
     "NEW_V6_FEATURE_KEYS",
     "NUMERIC_FEATURES",
     "Anc2VecIndex",
+    "PredictConfig",
     "__version__",
     "apply_reranker",
     "enrich_v6_features",
