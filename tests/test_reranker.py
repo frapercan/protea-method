@@ -53,7 +53,7 @@ def _train(df: pd.DataFrame) -> lgb.Booster:
     )
 
 
-def test_prepare_dataset_shapes():
+def test_prepare_dataset_shapes() -> None:
     df = _make_df()
     X, y = prepare_dataset(df)
     assert list(X.columns) == ALL_FEATURES
@@ -62,7 +62,7 @@ def test_prepare_dataset_shapes():
         assert X[col].dtype.kind in ("i", "u")  # label-encoded
 
 
-def test_predict_returns_probabilities_in_unit_interval():
+def test_predict_returns_probabilities_in_unit_interval() -> None:
     df = _make_df()
     booster = _train(df)
     scores = predict(booster, df)
@@ -71,7 +71,7 @@ def test_predict_returns_probabilities_in_unit_interval():
     assert float(scores.max()) <= 1.0
 
 
-def test_predict_handles_missing_label_column():
+def test_predict_handles_missing_label_column() -> None:
     df = _make_df()
     booster = _train(df)
     inference_df = df.drop(columns=[LABEL_COLUMN])
@@ -79,7 +79,7 @@ def test_predict_handles_missing_label_column():
     assert scores.shape == (len(df),)
 
 
-def test_apply_reranker_aligns_missing_columns():
+def test_apply_reranker_aligns_missing_columns() -> None:
     df = _make_df()
     booster = _train(df)
     sparse = df.drop(columns=NUMERIC_FEATURES[:2])  # drop two features
@@ -89,7 +89,7 @@ def test_apply_reranker_aligns_missing_columns():
     assert float(scores.max()) <= 1.0
 
 
-def test_model_from_string_roundtrip():
+def test_model_from_string_roundtrip() -> None:
     df = _make_df()
     booster = _train(df)
     text = booster.model_to_string()
@@ -100,7 +100,7 @@ def test_model_from_string_roundtrip():
     )
 
 
-def test_load_from_bytes_roundtrip():
+def test_load_from_bytes_roundtrip() -> None:
     df = _make_df()
     booster = _train(df)
     blob = booster.model_to_string().encode("utf-8")
@@ -111,7 +111,7 @@ def test_load_from_bytes_roundtrip():
     )
 
 
-def test_fit_embedding_pca_shapes():
+def test_fit_embedding_pca_shapes() -> None:
     rng = np.random.default_rng(0)
     embeddings = rng.standard_normal(size=(500, 128)).astype(np.float32)
     mean, components = fit_embedding_pca(embeddings, n_components=16)
@@ -121,14 +121,14 @@ def test_fit_embedding_pca_shapes():
     assert components.dtype == np.float32
 
 
-def test_fit_embedding_pca_rejects_empty_matrix():
+def test_fit_embedding_pca_rejects_empty_matrix() -> None:
     import pytest
 
     with pytest.raises(ValueError):
         fit_embedding_pca(np.zeros((0, 128), dtype=np.float32))
 
 
-def test_infer_active_feature_families_baseline():
+def test_infer_active_feature_families_baseline() -> None:
     families = infer_active_feature_families(
         compute_alignments=False,
         compute_taxonomy=False,
@@ -137,7 +137,7 @@ def test_infer_active_feature_families_baseline():
     assert families == ["annotation_meta", "knn"]
 
 
-def test_infer_active_feature_families_full():
+def test_infer_active_feature_families_full() -> None:
     families = infer_active_feature_families(
         compute_alignments=True,
         compute_taxonomy=True,
