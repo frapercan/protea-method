@@ -6,6 +6,7 @@ from protea_method.feature_enricher import (
     NEW_V6_FEATURE_KEYS,
     enrich_v6_features,
 )
+from protea_method.knn_search import search_knn
 from protea_method.pca_cache import load_or_fit_pca_state
 from protea_method.reranker import (
     ALL_FEATURES,
@@ -44,4 +45,5 @@ __all__ = [
     "model_from_string",
     "predict",
     "prepare_dataset",
+    "search_knn",
 ]

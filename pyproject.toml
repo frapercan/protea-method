@@ -46,11 +46,12 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "N", "RUF"]
-# N806 (uppercase X/y in functions): kept off because the X/y convention
-# is universal in ML code for feature matrix vs label vector.
+# N803/N806 (uppercase Q/R/X/y in args and locals): kept off because
+# numpy / ML code uses uppercase to mark matrices vs lowercase for
+# vectors; renaming hurts readability without a quality benefit.
 # RUF002 (Unicode lookalikes in docstrings): scientific text uses `×`,
 # `→`, `≤` legitimately; ASCII rewrites would obscure meaning.
-ignore = ["E501", "N806", "RUF002"]
+ignore = ["E501", "N803", "N806", "RUF002"]
 
 [tool.mypy]
 python_version = "3.10"
