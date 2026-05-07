@@ -7,6 +7,7 @@ from protea_method.feature_enricher import (
     enrich_v6_features,
 )
 from protea_method.knn_search import search_knn
+from protea_method.lineage import LINEAGE_FEATURE_KEYS, compute_lineage_features
 from protea_method.pca_cache import load_or_fit_pca_state
 from protea_method.pipeline import PredictConfig, predict
 from protea_method.reranker import (
@@ -34,12 +35,14 @@ __all__ = [
     "CATEGORICAL_FEATURES",
     "EMBEDDING_PCA_DIM",
     "LABEL_COLUMN",
+    "LINEAGE_FEATURE_KEYS",
     "NEW_V6_FEATURE_KEYS",
     "NUMERIC_FEATURES",
     "Anc2VecIndex",
     "PredictConfig",
     "__version__",
     "apply_reranker",
+    "compute_lineage_features",
     "enrich_v6_features",
     "fit_embedding_pca",
     "get_index",
