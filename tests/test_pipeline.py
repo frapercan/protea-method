@@ -206,3 +206,97 @@ def test_predict_with_reranker_scores(tmp_path: Path) -> None:
     for p in preds:
         score = p["reranker_score"]
         assert 0.0 <= score <= 1.0
+
+
+def _train_aspect_booster(rng_seed: int) -> lgb.Booster:
+    rng = np.random.default_rng(rng_seed)
+    n = 200
+    train_rows: dict[str, list] = {
+        "protein_accession": [f"P{i}" for i in range(n)],
+        "go_id": [f"GO:{i}" for i in range(n)],
+        "aspect": rng.choice(["F", "P", "C"], n).tolist(),
+        LABEL_COLUMN: rng.integers(0, 2, n).tolist(),
+    }
+    for col in ALL_FEATURES:
+        train_rows.setdefault(col, rng.random(n).tolist())
+    train_df = pd.DataFrame(train_rows)
+    X, y = prepare_dataset(train_df)
+    return lgb.train(
+        {"objective": "binary", "verbose": -1, "num_leaves": 7, "learning_rate": 0.1},
+        lgb.Dataset(X, label=y),
+        num_boost_round=5,
+    )
+
+
+def test_predict_with_boosters_by_aspect_scores_only_covered_aspects(
+    tmp_path: Path,
+) -> None:
+    """Per-aspect boosters score predictions of their aspect only."""
+    qa, qe, ra, re_, anns = _toy_corpus()
+
+    boosters_by_aspect = {
+        "F": _train_aspect_booster(1),
+        "C": _train_aspect_booster(2),
+        # No booster for aspect P → those predictions stay unscored.
+    }
+
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"},
+        go_aspect_map={1: "F", 2: "P", 3: "C"},
+        config=PredictConfig(k=3, compute_v6_features=True),
+        boosters_by_aspect=boosters_by_aspect,
+        anc_idx=_make_anc_idx(tmp_path),
+    )
+    assert preds
+    f_or_c = [p for p in preds if p["aspect"] in {"F", "C"}]
+    p_only = [p for p in preds if p["aspect"] == "P"]
+    assert f_or_c, "expected predictions for aspects F/C in toy corpus"
+    for p in f_or_c:
+        assert "reranker_score" in p
+        assert 0.0 <= p["reranker_score"] <= 1.0
+    for p in p_only:
+        assert "reranker_score" not in p
+
+
+def test_predict_boosters_by_aspect_takes_precedence_over_single(
+    tmp_path: Path,
+) -> None:
+    """When both ``boosters_by_aspect`` and ``booster`` are given, the
+    per-aspect mapping wins; aspects without an entry are left
+    unscored even if a single ``booster`` is also provided.
+
+    The toy corpus only produces predictions with aspects ``P`` and
+    ``C`` under ``k=3``; we route only ``C`` so non-``C`` rows are
+    proof that the single booster does not bleed in.
+    """
+    qa, qe, ra, re_, anns = _toy_corpus()
+    single = _train_aspect_booster(3)
+    boosters_by_aspect = {"C": _train_aspect_booster(4)}
+
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"},
+        go_aspect_map={1: "F", 2: "P", 3: "C"},
+        config=PredictConfig(k=3, compute_v6_features=True),
+        booster=single,
+        boosters_by_aspect=boosters_by_aspect,
+        anc_idx=_make_anc_idx(tmp_path),
+    )
+    c_preds = [p for p in preds if p["aspect"] == "C"]
+    non_c = [p for p in preds if p["aspect"] != "C"]
+    assert c_preds, "expected at least one C prediction in the toy corpus"
+    assert non_c, "expected at least one non-C prediction in the toy corpus"
+    for p in c_preds:
+        assert "reranker_score" in p
+    for p in non_c:
+        # boosters_by_aspect wins → single booster ignored on non-C aspects.
+        assert "reranker_score" not in p

@@ -233,6 +233,7 @@ def predict(
     pca_state: tuple[np.ndarray, np.ndarray] | None = None,
     pair_features: dict[tuple[str, str], dict[str, Any]] | None = None,
     booster: lgb.Booster | None = None,
+    boosters_by_aspect: dict[str, lgb.Booster] | None = None,
     reranker_feature_cols: list[str] | None = None,
     anc_idx: Anc2VecIndex | None = None,
 ) -> list[dict[str, Any]]:
@@ -247,8 +248,8 @@ def predict(
     - ``mean_distance`` (mean distance among voting neighbours)
     - the v6 feature columns from ``enrich_v6_features`` when
       ``config.compute_v6_features`` is true
-    - ``reranker_score`` when a ``booster`` is provided (in the
-      [0, 1] range)
+    - ``reranker_score`` when a ``booster`` (or
+      ``boosters_by_aspect[aspect]``) is provided, in the [0, 1] range.
 
     ``annotations`` maps each reference accession to its list of GO
     annotations. Each annotation dict must contain ``go_term_id`` and
@@ -258,6 +259,23 @@ def predict(
     ``go_id_map`` and ``go_aspect_map`` are the metadata maps loaded
     by the caller (DB query in PROTEA, bind-mounted parquet in the
     LAFA container).
+
+    Reranker routing
+    ----------------
+    Two mutually-exclusive paths score predictions:
+
+    1. ``booster`` (single LightGBM model) — every prediction is scored
+       by the same booster. Backwards-compatible with the original
+       single-booster path.
+    2. ``boosters_by_aspect`` (mapping ``aspect -> booster``) — each
+       prediction is scored by the booster keyed on its ``aspect``
+       field (``F`` / ``P`` / ``C``). Aspects that have no entry fall
+       back to KNN distance ordering (no ``reranker_score`` written
+       for those rows). This is the per-aspect selective strategy
+       used by the LAFA submission.
+
+    If both are provided, ``boosters_by_aspect`` wins and ``booster``
+    is ignored.
     """
     cfg = config or PredictConfig()
 
@@ -312,15 +330,56 @@ def predict(
             anc_idx=anc_idx,
         )
 
-    if booster is not None and predictions:
-        import pandas as pd
-
-        df = pd.DataFrame(predictions)
-        scores = apply_reranker(df, booster, feature_cols=reranker_feature_cols)
-        for pred, score in zip(predictions, scores, strict=True):
-            pred["reranker_score"] = float(score)
+    if predictions:
+        if boosters_by_aspect:
+            _score_per_aspect(
+                predictions, boosters_by_aspect, reranker_feature_cols,
+            )
+        elif booster is not None:
+            _score_single(predictions, booster, reranker_feature_cols)
 
     return predictions
+
+
+def _score_single(
+    predictions: list[dict[str, Any]],
+    booster: lgb.Booster,
+    feature_cols: list[str] | None,
+) -> None:
+    """Score every prediction with a single booster (legacy path)."""
+    import pandas as pd
+
+    df = pd.DataFrame(predictions)
+    scores = apply_reranker(df, booster, feature_cols=feature_cols)
+    for pred, score in zip(predictions, scores, strict=True):
+        pred["reranker_score"] = float(score)
+
+
+def _score_per_aspect(
+    predictions: list[dict[str, Any]],
+    boosters: dict[str, lgb.Booster],
+    feature_cols: list[str] | None,
+) -> None:
+    """Score predictions by aspect-specific boosters.
+
+    Predictions whose ``aspect`` field has no entry in ``boosters``
+    are left without a ``reranker_score`` (caller falls back to
+    distance-based ordering for those rows).
+    """
+    import pandas as pd
+
+    by_aspect: dict[str, list[int]] = {}
+    for idx, pred in enumerate(predictions):
+        aspect = str(pred.get("aspect", ""))
+        if aspect in boosters:
+            by_aspect.setdefault(aspect, []).append(idx)
+
+    for aspect, indices in by_aspect.items():
+        subset = [predictions[i] for i in indices]
+        df = pd.DataFrame(subset)
+        scores = apply_reranker(df, boosters[aspect], feature_cols=feature_cols)
+        for i, score in zip(indices, scores, strict=True):
+            predictions[i]["reranker_score"] = float(score)
 
 
 __all__ = ["PredictConfig", "predict"]
