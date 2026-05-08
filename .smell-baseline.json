@@ -1,0 +1,118 @@
+{
+  "thresholds": {
+    "file_loc": 800,
+    "class_loc": 500,
+    "method_loc": 60,
+    "param_count": 6
+  },
+  "offenders": [
+    {
+      "key": "method::src/protea_method/feature_enricher.py::enrich_v6_features",
+      "kind": "method",
+      "path": "src/protea_method/feature_enricher.py",
+      "name": "enrich_v6_features",
+      "line": 239,
+      "metric": 136,
+      "threshold": 60
+    },
+    {
+      "key": "method::src/protea_method/knn_search.py::search_knn",
+      "kind": "method",
+      "path": "src/protea_method/knn_search.py",
+      "name": "search_knn",
+      "line": 60,
+      "metric": 80,
+      "threshold": 60
+    },
+    {
+      "key": "method::src/protea_method/knn_search.py::_search_numpy",
+      "kind": "method",
+      "path": "src/protea_method/knn_search.py",
+      "name": "_search_numpy",
+      "line": 142,
+      "metric": 68,
+      "threshold": 60
+    },
+    {
+      "key": "method::src/protea_method/knn_search.py::_search_faiss",
+      "kind": "method",
+      "path": "src/protea_method/knn_search.py",
+      "name": "_search_faiss",
+      "line": 235,
+      "metric": 66,
+      "threshold": 60
+    },
+    {
+      "key": "method::src/protea_method/pipeline.py::predict",
+      "kind": "method",
+      "path": "src/protea_method/pipeline.py",
+      "name": "predict",
+      "line": 223,
+      "metric": 119,
+      "threshold": 60
+    },
+    {
+      "key": "params::src/protea_method/feature_enricher.py::_compute_neighbor_centroids",
+      "kind": "params",
+      "path": "src/protea_method/feature_enricher.py",
+      "name": "_compute_neighbor_centroids",
+      "line": 108,
+      "metric": 8,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_method/feature_enricher.py::enrich_v6_features",
+      "kind": "params",
+      "path": "src/protea_method/feature_enricher.py",
+      "name": "enrich_v6_features",
+      "line": 239,
+      "metric": 11,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_method/knn_search.py::search_knn",
+      "kind": "params",
+      "path": "src/protea_method/knn_search.py",
+      "name": "search_knn",
+      "line": 60,
+      "metric": 13,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_method/knn_search.py::_search_numpy",
+      "kind": "params",
+      "path": "src/protea_method/knn_search.py",
+      "name": "_search_numpy",
+      "line": 142,
+      "metric": 7,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_method/knn_search.py::_search_faiss",
+      "kind": "params",
+      "path": "src/protea_method/knn_search.py",
+      "name": "_search_faiss",
+      "line": 235,
+      "metric": 11,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_method/knn_search.py::_build_faiss_index",
+      "kind": "params",
+      "path": "src/protea_method/knn_search.py",
+      "name": "_build_faiss_index",
+      "line": 303,
+      "metric": 10,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_method/pipeline.py::predict",
+      "kind": "params",
+      "path": "src/protea_method/pipeline.py",
+      "name": "predict",
+      "line": 223,
+      "metric": 14,
+      "threshold": 6
+    }
+  ]
+}
