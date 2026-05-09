@@ -24,7 +24,7 @@ Two modes are supported via ``PredictConfig.aspect_separated``:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, overload
 
 import lightgbm as lgb
 import numpy as np
@@ -81,6 +81,32 @@ class PredictConfig:
     compute_taxonomy: bool = False
     pre_normalized: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PredictDiagnostics:
+    """Intermediate KNN state exposed alongside ``predict()`` output.
+
+    Returned only when callers pass ``return_diagnostics=True`` to
+    :func:`predict`. Lets callers layer their own per-(query, gtid)
+    derived features (rank, neighbor distance distribution, per-ref
+    annotation density, …) on top of the base prediction shape
+    without re-running the KNN.
+
+    Attributes
+    ----------
+    neighbors_by_aspect:
+        Per-aspect neighbour lists. Single-key ``{"": [...]}`` when
+        ``PredictConfig.aspect_separated=False``; per-aspect keys
+        ``"P" / "F" / "C"`` otherwise. Each value is a list of
+        ``[(ref_acc, distance), ...]`` per query, in rank order.
+    go_map_by_aspect:
+        Per-aspect ``ref_acc -> annotation list`` map for every
+        neighbour seen in ``neighbors_by_aspect``. Same key shape.
+    """
+
+    neighbors_by_aspect: dict[str, list[list[tuple[str, float]]]]
+    go_map_by_aspect: dict[str, dict[str, list[dict[str, Any]]]]
 
 
 def _build_go_map(
@@ -220,6 +246,48 @@ def _accumulate_votes(
     return predictions
 
 
+@overload
+def predict(
+    *,
+    query_accessions: list[str],
+    query_embeddings: np.ndarray,
+    reference_accessions: list[str],
+    reference_embeddings: np.ndarray,
+    annotations: dict[str, list[dict[str, Any]]],
+    go_id_map: dict[int, str],
+    go_aspect_map: dict[int, str],
+    config: PredictConfig | None = ...,
+    pca_state: tuple[np.ndarray, np.ndarray] | None = ...,
+    pair_features: dict[tuple[str, str], dict[str, Any]] | None = ...,
+    booster: lgb.Booster | None = ...,
+    boosters_by_aspect: dict[str, lgb.Booster] | None = ...,
+    reranker_feature_cols: list[str] | None = ...,
+    anc_idx: Anc2VecIndex | None = ...,
+    return_diagnostics: Literal[False] = False,
+) -> list[dict[str, Any]]: ...
+
+
+@overload
+def predict(
+    *,
+    query_accessions: list[str],
+    query_embeddings: np.ndarray,
+    reference_accessions: list[str],
+    reference_embeddings: np.ndarray,
+    annotations: dict[str, list[dict[str, Any]]],
+    go_id_map: dict[int, str],
+    go_aspect_map: dict[int, str],
+    config: PredictConfig | None = ...,
+    pca_state: tuple[np.ndarray, np.ndarray] | None = ...,
+    pair_features: dict[tuple[str, str], dict[str, Any]] | None = ...,
+    booster: lgb.Booster | None = ...,
+    boosters_by_aspect: dict[str, lgb.Booster] | None = ...,
+    reranker_feature_cols: list[str] | None = ...,
+    anc_idx: Anc2VecIndex | None = ...,
+    return_diagnostics: Literal[True],
+) -> tuple[list[dict[str, Any]], PredictDiagnostics]: ...
+
+
 def predict(
     *,
     query_accessions: list[str],
@@ -236,7 +304,8 @@ def predict(
     boosters_by_aspect: dict[str, lgb.Booster] | None = None,
     reranker_feature_cols: list[str] | None = None,
     anc_idx: Anc2VecIndex | None = None,
-) -> list[dict[str, Any]]:
+    return_diagnostics: bool = False,
+) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], PredictDiagnostics]:
     """End-to-end inference: KNN, base features, v6 features, optional reranker.
 
     Returns a flat list of prediction dicts. Each dict has at least:
@@ -276,13 +345,25 @@ def predict(
 
     If both are provided, ``boosters_by_aspect`` wins and ``booster``
     is ignored.
+
+    Diagnostics
+    -----------
+    Pass ``return_diagnostics=True`` to receive a
+    ``(predictions, PredictDiagnostics)`` tuple instead. Lets callers
+    layer their own per-(query, gtid) derived features (rank,
+    annotation provenance, per-ref densities, neighbour distance
+    distribution) on top of the base prediction shape without
+    re-running the KNN. Used by PROTEA's predict-go-terms-batch wire
+    (F2C.5) for backwards-compat with the booster's training-time
+    feature schema.
     """
     cfg = config or PredictConfig()
 
+    empty_diag = PredictDiagnostics(neighbors_by_aspect={}, go_map_by_aspect={})
     if not query_accessions or query_embeddings.size == 0:
-        return []
+        return ([], empty_diag) if return_diagnostics else []
     if reference_embeddings.size == 0:
-        return []
+        return ([], empty_diag) if return_diagnostics else []
 
     if cfg.aspect_separated:
         neighbors_by_aspect, go_map_by_aspect = _aspect_separated_knn(
@@ -338,6 +419,12 @@ def predict(
         elif booster is not None:
             _score_single(predictions, booster, reranker_feature_cols)
 
+    if return_diagnostics:
+        diagnostics = PredictDiagnostics(
+            neighbors_by_aspect=neighbors_by_aspect,
+            go_map_by_aspect=go_map_by_aspect,
+        )
+        return predictions, diagnostics
     return predictions
 
 
@@ -382,4 +469,4 @@ def _score_per_aspect(
             predictions[i]["reranker_score"] = float(score)
 
 
-__all__ = ["PredictConfig", "predict"]
+__all__ = ["PredictConfig", "PredictDiagnostics", "predict"]

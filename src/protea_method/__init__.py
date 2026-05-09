@@ -9,7 +9,7 @@ from protea_method.feature_enricher import (
 from protea_method.knn_search import search_knn
 from protea_method.lineage import LINEAGE_FEATURE_KEYS, compute_lineage_features
 from protea_method.pca_cache import load_or_fit_pca_state
-from protea_method.pipeline import PredictConfig, predict
+from protea_method.pipeline import PredictConfig, PredictDiagnostics, predict
 from protea_method.reranker import (
     ALL_FEATURES,
     CATEGORICAL_FEATURES,
@@ -24,7 +24,7 @@ from protea_method.reranker import (
     prepare_dataset,
 )
 
-__version__ = "0.0.1"
+__version__ = "0.2.0"
 
 # Note: ``predict`` exported from the package root is the high-level
 # pipeline orchestrator. The lower-level booster-scoring helper with
@@ -40,6 +40,7 @@ __all__ = [
     "NUMERIC_FEATURES",
     "Anc2VecIndex",
     "PredictConfig",
+    "PredictDiagnostics",
     "__version__",
     "apply_reranker",
     "compute_lineage_features",
