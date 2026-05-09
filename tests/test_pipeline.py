@@ -300,3 +300,108 @@ def test_predict_boosters_by_aspect_takes_precedence_over_single(
     for p in non_c:
         # boosters_by_aspect wins → single booster ignored on non-C aspects.
         assert "reranker_score" not in p
+
+
+# ---------------------------------------------------------------------------
+# return_diagnostics — opt-in intermediate state for downstream callers
+# ---------------------------------------------------------------------------
+
+
+def test_predict_default_returns_predictions_only(tmp_path: Path) -> None:
+    """Backwards compatibility: callers that don't pass ``return_diagnostics``
+    keep receiving a plain list, not a tuple."""
+    qa, qe, ra, re_, anns = _toy_corpus()
+    out = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"},
+        go_aspect_map={1: "F", 2: "P", 3: "C"},
+        config=PredictConfig(k=2, compute_v6_features=False),
+        anc_idx=_make_anc_idx(tmp_path),
+    )
+    assert isinstance(out, list)
+
+
+def test_predict_return_diagnostics_unified(tmp_path: Path) -> None:
+    """Diagnostics expose neighbours + go_map for the unified KNN branch."""
+    from protea_method.pipeline import PredictDiagnostics
+
+    qa, qe, ra, re_, anns = _toy_corpus()
+    out = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"},
+        go_aspect_map={1: "F", 2: "P", 3: "C"},
+        config=PredictConfig(k=2, compute_v6_features=False),
+        anc_idx=_make_anc_idx(tmp_path),
+        return_diagnostics=True,
+    )
+    assert isinstance(out, tuple)
+    _preds, diag = out
+    assert isinstance(diag, PredictDiagnostics)
+    # Unified mode collapses to a single ``""`` aspect key.
+    assert set(diag.neighbors_by_aspect.keys()) == {""}
+    assert set(diag.go_map_by_aspect.keys()) == {""}
+    # One neighbour list per query.
+    assert len(diag.neighbors_by_aspect[""]) == len(qa)
+    # go_map covers every neighbour seen.
+    seen_refs: set[str] = set()
+    for hits in diag.neighbors_by_aspect[""]:
+        for ref_acc, _ in hits:
+            seen_refs.add(ref_acc)
+    assert seen_refs.issubset(diag.go_map_by_aspect[""].keys())
+
+
+def test_predict_return_diagnostics_aspect_separated(tmp_path: Path) -> None:
+    """Diagnostics expose one neighbours list + go_map per GO aspect."""
+    from protea_method.pipeline import PredictDiagnostics
+
+    qa, qe, ra, re_, anns = _toy_corpus()
+    out = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"},
+        go_aspect_map={1: "F", 2: "P", 3: "C"},
+        config=PredictConfig(k=2, aspect_separated=True, compute_v6_features=False),
+        anc_idx=_make_anc_idx(tmp_path),
+        return_diagnostics=True,
+    )
+    assert isinstance(out, tuple)
+    _preds, diag = out
+    assert isinstance(diag, PredictDiagnostics)
+    # Aspect-separated mode: one bucket per ASPECT_CODES letter.
+    assert set(diag.neighbors_by_aspect.keys()) == {"P", "F", "C"}
+    assert set(diag.go_map_by_aspect.keys()) == {"P", "F", "C"}
+
+
+def test_predict_return_diagnostics_empty_query(tmp_path: Path) -> None:
+    """Empty-query short-circuit still returns a (preds, diag) tuple with
+    empty diagnostics so callers don't have to special-case the path."""
+    from protea_method.pipeline import PredictDiagnostics
+
+    _, _, ra, re_, anns = _toy_corpus()
+    out = predict(
+        query_accessions=[],
+        query_embeddings=np.zeros((0, 4), dtype=np.float32),
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={},
+        go_aspect_map={},
+        anc_idx=_make_anc_idx(tmp_path),
+        return_diagnostics=True,
+    )
+    preds, diag = out
+    assert preds == []
+    assert isinstance(diag, PredictDiagnostics)
+    assert diag.neighbors_by_aspect == {}
+    assert diag.go_map_by_aspect == {}

@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "protea-method"
-version = "0.0.1"
+version = "0.2.0"
 description = "Pure inference: KNN search, feature compute, apply reranker. Standalone library; no FastAPI, no SQLAlchemy."
 authors = ["Francisco Miguel Pérez Canales <frapercan1@gmail.com>"]
 license = "MIT"
