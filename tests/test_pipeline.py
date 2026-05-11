@@ -77,6 +77,177 @@ def test_predict_returns_base_features(tmp_path: Path) -> None:
         assert "anc2vec_neighbor_cos" in p
 
 
+def test_predict_emits_protea_row_shape(tmp_path: Path) -> None:
+    """Every row carries the PROTEA-compatible identity + reranker
+    aggregate fields the LightGBM lab booster trained on.
+    """
+    qa, qe, ra, re_, anns = _toy_corpus()
+    anns_with_meta: dict[str, list[dict[str, object]]] = {
+        ref: [
+            {**ann, "qualifier": "enables", "evidence_code": "IEA"}
+            for ann in ann_list
+        ]
+        for ref, ann_list in anns.items()
+    }
+    go_id_map = {1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"}
+    go_aspect_map = {1: "F", 2: "P", 3: "C"}
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns_with_meta,
+        go_id_map=go_id_map,
+        go_aspect_map=go_aspect_map,
+        config=PredictConfig(
+            k=3, compute_v6_features=False, prediction_set_id="pset-42",
+        ),
+    )
+    assert preds
+    required = {
+        "prediction_set_id",
+        "ref_protein_accession",
+        "qualifier",
+        "evidence_code",
+        "vote_count",
+        "k_position",
+        "go_term_frequency",
+        "ref_annotation_density",
+        "neighbor_distance_std",
+        "neighbor_vote_fraction",
+        "neighbor_min_distance",
+        "neighbor_mean_distance",
+        "go_id",
+        "aspect",
+    }
+    for p in preds:
+        missing = required - p.keys()
+        assert not missing, f"missing fields {missing} on row {p}"
+        assert p["prediction_set_id"] == "pset-42"
+        assert p["ref_protein_accession"] in ra
+        assert p["qualifier"] == "enables"
+        assert p["evidence_code"] == "IEA"
+        assert p["vote_count"] >= 1
+        assert 1 <= p["k_position"] <= 3
+        assert p["go_term_frequency"] >= 1
+        assert p["ref_annotation_density"] >= 1
+        assert p["neighbor_distance_std"] >= 0.0
+        assert 0.0 <= p["neighbor_vote_fraction"] <= 1.0
+        assert p["neighbor_min_distance"] <= p["neighbor_mean_distance"]
+        assert p["go_id"] == go_id_map[p["go_term_id"]]
+        assert p["aspect"] == go_aspect_map[p["go_term_id"]]
+
+
+def test_predict_propagates_pair_features_from_donor(tmp_path: Path) -> None:
+    """Alignment / taxonomy fields from the donor neighbour's
+    ``pair_features`` entry are merged into the row.
+    """
+    qa, qe, ra, re_, anns = _toy_corpus()
+    pair_features: dict[tuple[str, str], dict[str, object]] = {
+        (q, r): {
+            "identity_nw": 0.42,
+            "alignment_score_nw": 123.0,
+            "length_query": 100,
+            "length_ref": 110,
+            "taxonomic_distance": 7,
+            "taxonomic_common_ancestors": 3,
+            "taxonomic_relation": "close",
+        }
+        for q in qa
+        for r in ra
+    }
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"},
+        go_aspect_map={1: "F", 2: "P", 3: "C"},
+        config=PredictConfig(k=3, compute_v6_features=False),
+        pair_features=pair_features,
+    )
+    assert preds
+    for p in preds:
+        assert p["identity_nw"] == 0.42
+        assert p["alignment_score_nw"] == 123.0
+        assert p["length_query"] == 100
+        assert p["length_ref"] == 110
+        assert p["taxonomic_distance"] == 7
+        assert p["taxonomic_common_ancestors"] == 3
+        assert p["taxonomic_relation"] == "close"
+
+
+def test_predict_neighbor_vote_fraction_matches_k(tmp_path: Path) -> None:
+    """vote_count / k_limit equals ``neighbor_vote_fraction``."""
+    qa, qe, ra, re_, anns = _toy_corpus()
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"},
+        go_aspect_map={1: "F", 2: "P", 3: "C"},
+        config=PredictConfig(k=4, compute_v6_features=False),
+    )
+    for p in preds:
+        assert p["neighbor_vote_fraction"] == p["vote_count"] / 4.0
+
+
+def test_predict_aspect_separated_rows_carry_protea_fields(tmp_path: Path) -> None:
+    """Per-aspect KNN still produces the full PROTEA row shape."""
+    qa, qe, ra, re_, anns = _toy_corpus()
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"},
+        go_aspect_map={1: "F", 2: "P", 3: "C"},
+        config=PredictConfig(
+            k=2,
+            aspect_separated=True,
+            compute_v6_features=False,
+            prediction_set_id="pset-asp",
+        ),
+    )
+    assert preds
+    for p in preds:
+        assert p["prediction_set_id"] == "pset-asp"
+        assert "ref_protein_accession" in p
+        assert "k_position" in p
+        assert "go_term_frequency" in p
+        assert "neighbor_vote_fraction" in p
+        assert 0.0 <= p["neighbor_vote_fraction"] <= 1.0
+
+
+def test_predict_distance_std_zero_when_single_distance(tmp_path: Path) -> None:
+    """One total neighbour across all aspects produces std = 0."""
+    qa = ["Q1"]
+    qe = np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+    ra = ["R0"]
+    re_ = np.array([[1.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+    anns: dict[str, list[dict[str, object]]] = {"R0": [{"go_term_id": 1}]}
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map={1: "GO:0000001"},
+        go_aspect_map={1: "F"},
+        config=PredictConfig(k=1, compute_v6_features=False),
+    )
+    assert preds
+    for p in preds:
+        assert p["neighbor_distance_std"] == 0.0
+        assert p["k_position"] == 1
+        assert p["vote_count"] == 1
+        assert p["ref_protein_accession"] == "R0"
+
+
 def test_predict_short_circuits_on_empty_query(tmp_path: Path) -> None:
     _, _, ra, re_, anns = _toy_corpus()
     preds = predict(
