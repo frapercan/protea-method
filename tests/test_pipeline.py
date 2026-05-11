@@ -576,3 +576,103 @@ def test_predict_return_diagnostics_empty_query(tmp_path: Path) -> None:
     assert isinstance(diag, PredictDiagnostics)
     assert diag.neighbors_by_aspect == {}
     assert diag.go_map_by_aspect == {}
+
+
+def test_predict_lineage_features_off_by_default(tmp_path: Path) -> None:
+    """Bit-exact baseline: lineage columns are absent when the flag is off."""
+    qa, qe, ra, re_, anns = _toy_corpus()
+    go_id_map = {1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"}
+    go_aspect_map = {1: "F", 2: "P", 3: "C"}
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map=go_id_map,
+        go_aspect_map=go_aspect_map,
+        config=PredictConfig(k=3, compute_v6_features=False),
+    )
+    assert preds
+    for p in preds:
+        assert "lineage_is_ancestor_of_known" not in p
+        assert "lineage_is_descendant_of_known" not in p
+
+
+def test_predict_lineage_features_on_layers_columns(tmp_path: Path) -> None:
+    """When the flag is on, the 4 lineage columns land on every row."""
+    qa, qe, ra, re_, anns = _toy_corpus()
+    go_id_map = {1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"}
+    go_aspect_map = {1: "F", 2: "P", 3: "C"}
+    # GO:0000002 is_a GO:0000001; GO:0000003 is_a GO:0000002.
+    parents = {
+        "GO:0000002": ["GO:0000001"],
+        "GO:0000003": ["GO:0000002"],
+    }
+    known_by_protein = {"Q1": {"GO:0000003"}, "Q2": set()}
+    preds = predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map=go_id_map,
+        go_aspect_map=go_aspect_map,
+        config=PredictConfig(
+            k=3,
+            compute_v6_features=False,
+            compute_lineage_features=True,
+        ),
+        parents=parents,
+        known_by_protein=known_by_protein,
+    )
+    assert preds
+    for p in preds:
+        for key in (
+            "lineage_is_ancestor_of_known",
+            "lineage_is_descendant_of_known",
+            "lineage_ancestor_of_count",
+            "lineage_descendant_of_count",
+        ):
+            assert key in p, f"missing {key} on {p}"
+    # Q1 knows GO:0000003 (a descendant of GO:0000001 and GO:0000002), so
+    # any candidate equal to GO:0000001 or GO:0000002 must flip the
+    # ancestor-of-known flag on for Q1; Q2 has no known annotations so
+    # every flag stays zero.
+    q1_rows = [p for p in preds if p["protein_accession"] == "Q1"]
+    q2_rows = [p for p in preds if p["protein_accession"] == "Q2"]
+    q1_ancestor_hits = [
+        p for p in q1_rows
+        if p.get("go_id") in {"GO:0000001", "GO:0000002"}
+    ]
+    if q1_ancestor_hits:
+        assert any(
+            p["lineage_is_ancestor_of_known"] == 1.0 for p in q1_ancestor_hits
+        )
+    for p in q2_rows:
+        assert p["lineage_is_ancestor_of_known"] == 0.0
+        assert p["lineage_is_descendant_of_known"] == 0.0
+
+
+def test_predict_lineage_features_requires_parents_and_known(tmp_path: Path) -> None:
+    """compute_lineage_features=True without inputs is a hard error."""
+    qa, qe, ra, re_, anns = _toy_corpus()
+    go_id_map = {1: "GO:0000001", 2: "GO:0000002", 3: "GO:0000003"}
+    go_aspect_map = {1: "F", 2: "P", 3: "C"}
+    import pytest
+
+    with pytest.raises(ValueError, match="compute_lineage_features"):
+        predict(
+            query_accessions=qa,
+            query_embeddings=qe,
+            reference_accessions=ra,
+            reference_embeddings=re_,
+            annotations=anns,
+            go_id_map=go_id_map,
+            go_aspect_map=go_aspect_map,
+            config=PredictConfig(
+                k=3,
+                compute_v6_features=False,
+                compute_lineage_features=True,
+            ),
+        )

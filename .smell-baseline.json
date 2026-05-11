@@ -47,8 +47,8 @@
       "kind": "method",
       "path": "src/protea_method/pipeline.py",
       "name": "predict",
-      "line": 455,
-      "metric": 147,
+      "line": 468,
+      "metric": 161,
       "threshold": 60
     },
     {
@@ -110,8 +110,8 @@
       "kind": "params",
       "path": "src/protea_method/pipeline.py",
       "name": "predict",
-      "line": 414,
-      "metric": 15,
+      "line": 423,
+      "metric": 17,
       "threshold": 6
     },
     {
@@ -119,8 +119,8 @@
       "kind": "params",
       "path": "src/protea_method/pipeline.py",
       "name": "predict",
-      "line": 435,
-      "metric": 15,
+      "line": 446,
+      "metric": 17,
       "threshold": 6
     },
     {
@@ -128,8 +128,8 @@
       "kind": "params",
       "path": "src/protea_method/pipeline.py",
       "name": "predict",
-      "line": 455,
-      "metric": 15,
+      "line": 468,
+      "metric": 17,
       "threshold": 6
     }
   ]

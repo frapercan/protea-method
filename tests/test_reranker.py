@@ -152,6 +152,21 @@ def test_infer_active_feature_families_full() -> None:
     assert "taxonomy_pair" in families
     assert "anc2vec_neighbor" in families
     assert "emb_pca" in families
+    # Lineage stays out unless the caller opts in explicitly so the
+    # baseline 13-family schema sha keeps reproducing bit-exact.
+    assert "lineage" not in families
+
+
+def test_infer_active_feature_families_lineage_opt_in() -> None:
+    families = infer_active_feature_families(
+        compute_alignments=False,
+        compute_taxonomy=False,
+        compute_v6_features=False,
+        compute_lineage_features=True,
+    )
+    assert "lineage" in families
+    assert "knn" in families
+    assert "annotation_meta" in families
 
 
 def test_predict_with_categorical_codes_vocabulary() -> None:

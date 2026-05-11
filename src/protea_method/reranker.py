@@ -187,14 +187,20 @@ def infer_active_feature_families(
     compute_alignments: bool,
     compute_taxonomy: bool,
     compute_v6_features: bool,
+    compute_lineage_features: bool = False,
 ) -> list[str]:
     """Map predict-time feature flags onto lab feature families.
 
     The PROTEA predict pipeline always materialises KNN features and
     annotation-meta columns (qualifier/evidence_code/aspect); the
     optional flags enable alignment, taxonomy-pair, taxonomy-voters,
-    GO-context, anc2vec, emb-pca and length families. Keep this in
-    sync with ``protea_reranker_lab.contracts.FEATURE_FAMILIES``.
+    GO-context, anc2vec, emb-pca, length and lineage families. Keep
+    this in sync with ``protea_reranker_lab.contracts.FEATURE_FAMILIES``.
+
+    ``compute_lineage_features`` defaults to ``False`` so existing
+    callers that never opted into the lineage feature continue to
+    produce the same feature-schema fingerprint they shipped with
+    (bit-exact reproducibility against the 52-feature lab champion).
     """
     families: list[str] = ["knn", "annotation_meta"]
     if compute_alignments:
@@ -206,6 +212,8 @@ def infer_active_feature_families(
         families.extend(
             ["anc2vec_neighbor", "anc2vec_query", "emb_pca", "taxonomy_voters", "go_context"]
         )
+    if compute_lineage_features:
+        families.append("lineage")
     return sorted(set(families))
 
 

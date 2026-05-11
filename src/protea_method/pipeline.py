@@ -32,6 +32,7 @@ import numpy as np
 from protea_method.anc2vec import Anc2VecIndex
 from protea_method.feature_enricher import ASPECT_CODES, enrich_v6_features
 from protea_method.knn_search import search_knn
+from protea_method.lineage import compute_lineage_features as _compute_lineage_features
 from protea_method.reranker import apply_reranker
 
 
@@ -75,6 +76,13 @@ class PredictConfig:
         ``PredictionSet`` row id. When given it is copied onto every
         emitted row so the lab dump and the live pipeline produce
         identical schemas.
+    compute_lineage_features:
+        Run the GO-DAG lineage feature compute pass (4 columns
+        describing how each candidate relates to the query's
+        pre-cutoff known annotations). Requires the caller to supply
+        ``parents`` and ``known_by_protein`` to :func:`predict`. Off
+        by default so existing boosters that did not train on the
+        lineage family continue to score bit-exact.
     """
 
     k: int = 5
@@ -86,6 +94,7 @@ class PredictConfig:
     compute_taxonomy: bool = False
     pre_normalized: bool = False
     prediction_set_id: str | None = None
+    compute_lineage_features: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -427,6 +436,8 @@ def predict(
     boosters_by_aspect: dict[str, lgb.Booster] | None = ...,
     reranker_feature_cols: list[str] | None = ...,
     anc_idx: Anc2VecIndex | None = ...,
+    parents: dict[str, list[str]] | None = ...,
+    known_by_protein: dict[str, set[str]] | None = ...,
     return_diagnostics: Literal[False] = False,
 ) -> list[dict[str, Any]]: ...
 
@@ -448,6 +459,8 @@ def predict(
     boosters_by_aspect: dict[str, lgb.Booster] | None = ...,
     reranker_feature_cols: list[str] | None = ...,
     anc_idx: Anc2VecIndex | None = ...,
+    parents: dict[str, list[str]] | None = ...,
+    known_by_protein: dict[str, set[str]] | None = ...,
     return_diagnostics: Literal[True],
 ) -> tuple[list[dict[str, Any]], PredictDiagnostics]: ...
 
@@ -468,6 +481,8 @@ def predict(
     boosters_by_aspect: dict[str, lgb.Booster] | None = None,
     reranker_feature_cols: list[str] | None = None,
     anc_idx: Anc2VecIndex | None = None,
+    parents: dict[str, list[str]] | None = None,
+    known_by_protein: dict[str, set[str]] | None = None,
     return_diagnostics: bool = False,
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], PredictDiagnostics]:
     """End-to-end inference: KNN, base features, v6 features, optional reranker.
@@ -582,6 +597,18 @@ def predict(
             pca_state=pca_state,
             compute_taxonomy=cfg.compute_taxonomy,
             anc_idx=anc_idx,
+        )
+
+    if cfg.compute_lineage_features and predictions:
+        if parents is None or known_by_protein is None:
+            raise ValueError(
+                "compute_lineage_features=True requires both `parents` and "
+                "`known_by_protein` to be supplied to predict()."
+            )
+        _compute_lineage_features(
+            predictions,
+            parents=parents,
+            known_by_protein=known_by_protein,
         )
 
     if predictions:
