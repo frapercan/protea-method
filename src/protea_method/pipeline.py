@@ -70,6 +70,11 @@ class PredictConfig:
     pre_normalized:
         Reference embeddings are already L2-normalised. Skips the
         per-call normalisation in ``search_knn`` (cosine only).
+    prediction_set_id:
+        Free-form provenance string PROTEA forwards from the
+        ``PredictionSet`` row id. When given it is copied onto every
+        emitted row so the lab dump and the live pipeline produce
+        identical schemas.
     """
 
     k: int = 5
@@ -80,6 +85,7 @@ class PredictConfig:
     compute_v6_features: bool = True
     compute_taxonomy: bool = False
     pre_normalized: bool = False
+    prediction_set_id: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -195,55 +201,213 @@ def _aspect_separated_knn(
     return neighbors_by_aspect, go_map_by_aspect
 
 
+def _annotation_aggregates(
+    annotations: dict[str, list[dict[str, Any]]],
+) -> tuple[dict[int, int], dict[str, int]]:
+    """Pre-compute ``(go_term_frequency, ref_annotation_density)``.
+
+    Both are dataset-wide aggregates independent of the query batch,
+    so they are computed once before the per-query loop.
+    """
+    go_term_freq: dict[int, int] = {}
+    ref_ann_density: dict[str, int] = {}
+    for ref_acc, anns in annotations.items():
+        if not anns:
+            continue
+        ref_ann_density[ref_acc] = len(anns)
+        for ann in anns:
+            gtid = int(ann["go_term_id"])
+            go_term_freq[gtid] = go_term_freq.get(gtid, 0) + 1
+    return go_term_freq, ref_ann_density
+
+
+def _collect_query_distances(
+    q_idx: int,
+    neighbors_by_aspect: dict[str, list[list[tuple[str, float]]]],
+) -> list[float]:
+    """Flatten the KNN distances of one query across all aspect indices."""
+    out: list[float] = []
+    for neighbors_per_query in neighbors_by_aspect.values():
+        if q_idx < len(neighbors_per_query):
+            out.extend(float(d) for _, d in neighbors_per_query[q_idx])
+    return out
+
+
+def _tally_query_votes(
+    *,
+    q_idx: int,
+    neighbors_by_aspect: dict[str, list[list[tuple[str, float]]]],
+    annotations: dict[str, list[dict[str, Any]]],
+    go_aspect_map: dict[int, str],
+    aspect_separated: bool,
+) -> dict[int, dict[str, Any]]:
+    """Run the vote-tally for one query and return per-(go_term) stats."""
+    votes: dict[int, dict[str, Any]] = {}
+    for aspect_key, neighbors_per_query in neighbors_by_aspect.items():
+        if q_idx >= len(neighbors_per_query):
+            continue
+        for k_pos, (ref_acc, distance) in enumerate(
+            neighbors_per_query[q_idx], start=1,
+        ):
+            d = float(distance)
+            for ann in annotations.get(ref_acc, []):
+                gtid = int(ann["go_term_id"])
+                if aspect_separated:
+                    if go_aspect_map.get(gtid, "") != aspect_key:
+                        continue
+                stat = votes.get(gtid)
+                if stat is None:
+                    stat = {
+                        "vote_count": 0,
+                        "sum_d": 0.0,
+                        "min_d": d,
+                        "donor_ref": ref_acc,
+                        "donor_ann": ann,
+                        "k_position": k_pos,
+                    }
+                    votes[gtid] = stat
+                stat["vote_count"] += 1
+                stat["sum_d"] += d
+                if d < stat["min_d"]:
+                    stat["min_d"] = d
+                    stat["donor_ref"] = ref_acc
+                    stat["donor_ann"] = ann
+    return votes
+
+
+@dataclass(frozen=True)
+class _RowContext:
+    """Static state shared by every ``(query, go_term)`` row of one batch."""
+
+    go_id_map: dict[int, str]
+    go_aspect_map: dict[int, str]
+    go_term_freq: dict[int, int]
+    ref_ann_density: dict[str, int]
+    pair_features: dict[tuple[str, str], dict[str, Any]]
+    k_div: float
+    prediction_set_id: str | None
+
+
+def _make_row(
+    q_acc: str,
+    gtid: int,
+    stat: dict[str, Any],
+    distance_std: float,
+    ctx: _RowContext,
+) -> dict[str, Any]:
+    """Build one PROTEA-shaped prediction row from a tally stat dict."""
+    vote_count = int(stat["vote_count"])
+    mean_d = stat["sum_d"] / vote_count
+    donor_ref = str(stat["donor_ref"])
+    donor_ann = stat["donor_ann"]
+    row: dict[str, Any] = {
+        "protein_accession": q_acc,
+        "go_term_id": gtid,
+        "vote_count": vote_count,
+        "min_distance": stat["min_d"],
+        "mean_distance": mean_d,
+        "distance": stat["min_d"],
+        "aspect": ctx.go_aspect_map.get(gtid, ""),
+        "ref_protein_accession": donor_ref,
+        "qualifier": donor_ann.get("qualifier") or "",
+        "evidence_code": donor_ann.get("evidence_code") or "",
+        "k_position": int(stat["k_position"]),
+        "go_term_frequency": ctx.go_term_freq.get(gtid, 0),
+        "ref_annotation_density": ctx.ref_ann_density.get(donor_ref, 0),
+        "neighbor_distance_std": distance_std,
+        "neighbor_vote_fraction": vote_count / ctx.k_div,
+        "neighbor_min_distance": stat["min_d"],
+        "neighbor_mean_distance": mean_d,
+    }
+    go_id = ctx.go_id_map.get(gtid)
+    if go_id is not None:
+        row["go_id"] = go_id
+    if ctx.prediction_set_id is not None:
+        row["prediction_set_id"] = ctx.prediction_set_id
+    pf = ctx.pair_features.get((q_acc, donor_ref), {})
+    if pf:
+        _propagate_pair_features(row, pf)
+    return row
+
+
 def _accumulate_votes(
     *,
     query_accessions: list[str],
     neighbors_by_aspect: dict[str, list[list[tuple[str, float]]]],
     annotations: dict[str, list[dict[str, Any]]],
-    go_aspect_map: dict[int, str],
+    ctx: _RowContext,
     aspect_separated: bool,
 ) -> list[dict[str, Any]]:
-    """Build base prediction dicts (protein, go_term, vote_count, distances).
+    """Build PROTEA-compatible prediction dicts with reranker aggregates.
 
-    In aspect-separated mode, only annotations matching the current
-    KNN's aspect contribute to that aspect's votes; this prevents an
-    aspect-F neighbour's P-annotations from leaking into the F vote
-    pool.
+    See ``predict`` for the row shape. The function delegates the
+    per-query vote tally to ``_tally_query_votes`` and the row
+    materialisation to ``_make_row``; this orchestrator just walks
+    queries.
     """
     predictions: list[dict[str, Any]] = []
     for q_idx, q_acc in enumerate(query_accessions):
-        votes: dict[int, dict[str, float]] = {}
-        for aspect_key, neighbors_per_query in neighbors_by_aspect.items():
-            if q_idx >= len(neighbors_per_query):
-                continue
-            for ref_acc, distance in neighbors_per_query[q_idx]:
-                for ann in annotations.get(ref_acc, []):
-                    gtid = int(ann["go_term_id"])
-                    if aspect_separated:
-                        ann_aspect = go_aspect_map.get(gtid, "")
-                        if ann_aspect != aspect_key:
-                            continue
-                    stat = votes.setdefault(
-                        gtid,
-                        {"vote_count": 0.0, "sum_d": 0.0, "min_d": float("inf")},
-                    )
-                    stat["vote_count"] += 1.0
-                    stat["sum_d"] += float(distance)
-                    if float(distance) < stat["min_d"]:
-                        stat["min_d"] = float(distance)
+        dists = _collect_query_distances(q_idx, neighbors_by_aspect)
+        distance_std = float(np.std(dists)) if len(dists) > 1 else 0.0
+        votes = _tally_query_votes(
+            q_idx=q_idx,
+            neighbors_by_aspect=neighbors_by_aspect,
+            annotations=annotations,
+            go_aspect_map=ctx.go_aspect_map,
+            aspect_separated=aspect_separated,
+        )
         for gtid, stat in votes.items():
-            predictions.append(
-                {
-                    "protein_accession": q_acc,
-                    "go_term_id": gtid,
-                    "vote_count": stat["vote_count"],
-                    "min_distance": stat["min_d"],
-                    "mean_distance": stat["sum_d"] / stat["vote_count"],
-                    "distance": stat["min_d"],
-                    "aspect": go_aspect_map.get(gtid, ""),
-                },
-            )
+            predictions.append(_make_row(q_acc, gtid, stat, distance_std, ctx))
     return predictions
+
+
+def _build_row_context(
+    *,
+    cfg: PredictConfig,
+    annotations: dict[str, list[dict[str, Any]]],
+    go_id_map: dict[int, str],
+    go_aspect_map: dict[int, str],
+    pair_features: dict[tuple[str, str], dict[str, Any]] | None,
+) -> _RowContext:
+    """Assemble the static row context for one ``predict`` invocation."""
+    go_term_freq, ref_ann_density = _annotation_aggregates(annotations)
+    return _RowContext(
+        go_id_map=go_id_map,
+        go_aspect_map=go_aspect_map,
+        go_term_freq=go_term_freq,
+        ref_ann_density=ref_ann_density,
+        pair_features=pair_features or {},
+        k_div=float(max(1, cfg.k)),
+        prediction_set_id=cfg.prediction_set_id,
+    )
+
+
+_PAIR_FEATURE_KEYS: tuple[str, ...] = (
+    "identity_nw",
+    "similarity_nw",
+    "alignment_score_nw",
+    "gaps_pct_nw",
+    "alignment_length_nw",
+    "identity_sw",
+    "similarity_sw",
+    "alignment_score_sw",
+    "gaps_pct_sw",
+    "alignment_length_sw",
+    "length_query",
+    "length_ref",
+    "taxonomic_distance",
+    "taxonomic_common_ancestors",
+    "taxonomic_relation",
+)
+
+
+def _propagate_pair_features(
+    row: dict[str, Any], pf: dict[str, Any],
+) -> None:
+    """Copy the alignment / taxonomy fields the lab schema expects."""
+    for key in _PAIR_FEATURE_KEYS:
+        if key in pf:
+            row[key] = pf[key]
 
 
 @overload
@@ -308,17 +472,19 @@ def predict(
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], PredictDiagnostics]:
     """End-to-end inference: KNN, base features, v6 features, optional reranker.
 
-    Returns a flat list of prediction dicts. Each dict has at least:
-
-    - ``protein_accession`` (query)
-    - ``go_term_id`` (the candidate GO term id, integer)
-    - ``vote_count`` (number of neighbours that voted for this term)
-    - ``min_distance`` (smallest distance among voting neighbours)
-    - ``mean_distance`` (mean distance among voting neighbours)
-    - the v6 feature columns from ``enrich_v6_features`` when
-      ``config.compute_v6_features`` is true
-    - ``reranker_score`` when a ``booster`` (or
-      ``boosters_by_aspect[aspect]``) is provided, in the [0, 1] range.
+    Returns PROTEA-compatible prediction dicts. Each row carries
+    identity (``protein_accession``, ``go_term_id``, ``go_id``,
+    ``aspect``, ``ref_protein_accession``, donor ``qualifier`` /
+    ``evidence_code``, optional ``prediction_set_id``) and the
+    reranker-feature aggregates ``vote_count``, ``k_position``,
+    ``go_term_frequency``, ``ref_annotation_density``,
+    ``neighbor_distance_std``, ``neighbor_vote_fraction``,
+    ``neighbor_min_distance``, ``neighbor_mean_distance``. Legacy
+    aliases ``min_distance`` / ``mean_distance`` / ``distance`` are
+    preserved. Alignment / taxonomy fields are merged from
+    ``pair_features[(query, donor_ref)]``. v6 features and
+    ``reranker_score`` are appended when their respective inputs are
+    provided.
 
     ``annotations`` maps each reference accession to its list of GO
     annotations. Each annotation dict must contain ``go_term_id`` and
@@ -388,11 +554,18 @@ def predict(
         neighbors_by_aspect = {"": neighbors_per_query}
         go_map_by_aspect = {"": _build_go_map(neighbors_per_query, annotations)}
 
+    row_ctx = _build_row_context(
+        cfg=cfg,
+        annotations=annotations,
+        go_id_map=go_id_map,
+        go_aspect_map=go_aspect_map,
+        pair_features=pair_features,
+    )
     predictions = _accumulate_votes(
         query_accessions=query_accessions,
         neighbors_by_aspect=neighbors_by_aspect,
         annotations=annotations,
-        go_aspect_map=go_aspect_map,
+        ctx=row_ctx,
         aspect_separated=cfg.aspect_separated,
     )
 
