@@ -9,6 +9,9 @@ operation delegates to at runtime. It is also the package shipped to
 consumers who want to run predictions without the full platform stack
 (no Postgres, no RabbitMQ, no workers required).
 
+**Status:** v0.0.1 (experimental, pre-1.0; SemVer-coordinated with `protea-contracts`; breaking changes to the feature schema require a major bump).
+See the [PROTEA stack architecture](https://github.com/frapercan/PROTEA#repositories-in-the-protea-stack) for where this package fits.
+
 ## Install
 
 ```bash
@@ -97,7 +100,7 @@ Those concerns live in `protea-sources` (for sequences) and
 3. Call `predict(...)` from this package.
 
 Alternatively, start the full PROTEA stack and submit a `predict_go_terms`
-job via `POST /jobs` — the platform runs the same `predict` function internally.
+job via `POST /jobs`; the platform runs the same `predict` function internally.
 
 ## Versioning
 
@@ -151,7 +154,7 @@ Key constraints:
   brute-force are the only allowed KNN backends here.
 - **No runtime deps** on `sqlalchemy`, `fastapi`, or `protea-core`. New
   deps must be `optional` or justified in the PR description.
-- Public API is SemVer-ed — coordinate breaking changes with
+- Public API is SemVer-ed; coordinate breaking changes with
   `protea-contracts` versioning.
 
 ## Documentation
