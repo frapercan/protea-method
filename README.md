@@ -15,14 +15,28 @@ consumers who want to run predictions without the full platform stack
 pip install protea-method
 ```
 
-PROTEA ships CPU-only torch by default. For GPU inference, install the
-CUDA wheel after the base install:
+The default install is torch-free: KNN search, feature enrichment,
+Anc2Vec, lineage, and the LightGBM reranker run on numpy + faiss-cpu
++ lightgbm only.
+
+The optional gated-attention MIL head (`protea_method.mil`) requires
+torch and is opt-in via the `mil` extra:
 
 ```bash
-pip install protea-method
-# then swap in the GPU wheel:
+pip install "protea-method[mil]"
+```
+
+For GPU inference with the MIL head, install the extra first (which
+brings in the CPU torch wheel) and then swap in the CUDA wheel:
+
+```bash
+pip install "protea-method[mil]"
 pip install torch --index-url https://download.pytorch.org/whl/cu121
 ```
+
+Importing `protea_method.mil.head` without the `mil` extra raises a
+clear `ImportError` pointing back at this install recipe; the rest of
+`protea_method` keeps importing cleanly without torch on the path.
 
 ## Quickstart
 
