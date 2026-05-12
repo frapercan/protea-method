@@ -53,7 +53,7 @@ except ImportError as exc:  # pragma: no cover - import-time guard
     ) from exc
 
 
-class GatedAttentionMILHead(nn.Module):
+class GatedAttentionMILHead(nn.Module):  # type: ignore[misc]
     """Gated-attention MIL head with per-GO-term residue attribution.
 
     Parameters
