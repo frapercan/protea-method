@@ -32,6 +32,18 @@ numpy = ">=1.24"
 pandas = ">=2.0"
 lightgbm = ">=4.0"
 faiss-cpu = ">=1.7"
+# Optional. Pulled in only with the `mil` extra (D15 distribution
+# discipline). CPU torch wheels add ~250 MB and are only needed by
+# the gated-attention MIL head in `protea_method.mil`. The default
+# install path (`pip install protea-method`) stays slim and
+# torch-free.
+torch = { version = ">=2.0,<3.0", optional = true }
+
+[tool.poetry.extras]
+# `pip install protea-method[mil]` enables the MIL head. CPU users
+# get the default pypi wheel; GPU users follow the README recipe to
+# swap in the CUDA wheel after the base install.
+mil = ["torch"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7"
@@ -63,6 +75,14 @@ disallow_any_generics = false
 
 [[tool.mypy.overrides]]
 module = ["lightgbm", "lightgbm.*", "faiss", "faiss.*"]
+ignore_missing_imports = true
+
+# torch is an optional extra (see [tool.poetry.extras] mil). Strict
+# mypy would otherwise fail in environments where the extra is not
+# installed; the runtime guard in protea_method.mil.head raises a
+# clear ImportError so the missing-stubs path here is harmless.
+[[tool.mypy.overrides]]
+module = ["torch", "torch.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
