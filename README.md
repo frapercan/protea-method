@@ -87,12 +87,33 @@ predictions = predict(query_embeddings, ref_embeddings, ref_annotations, parent_
 | `anc2vec.py` | Ancestor-embedding index for GO DAG proximity features |
 | `lineage.py` | Taxonomic lineage distance features |
 | `pca_cache.py` | Lazy PCA fitting / loading for embedding compression |
+| `io/lafa_tsv.py` | 3-column LAFA TSV writer (Query_ID, GO_Term, Score) |
+| `io/loaders.py` | FASTA / GAF / OBO readers for the container entrypoint |
 
 ## Running predictions on a FASTA file
 
-`protea-method` does not include a FASTA parser or an embedding backend.
-Those concerns live in `protea-sources` (for sequences) and
-`protea-backends` (for PLM embeddings). The typical end-to-end flow is:
+`protea-method` ships a LAFA-ready submission container (LAFA-CONTAINER.1).
+The bundled `method_main.py` entrypoint accepts the LAFA standard interface
+(FASTA inputs, GAF annotations, OBO graph, 3-column TSV output) and is the
+script the Docker image runs.
+
+```bash
+docker build -t protea-method-lafa:latest .
+
+bash docker/example_run.sh
+```
+
+See `docker/example_run.sh` for the full invocation. The mount-point
+contract follows the LAFA container guide: `./data:/app/data:ro` for inputs
+and `./output:/app/output:rw` for predictions.
+
+In this slice the embedding backend is bind-mounted as parquet files
+(`--query_embeds`, `--reference_embeds`). Wiring an in-container ESM /
+ProstT5 embedder is the LAFA-EMB.1 follow-up. The two parquet files must
+carry an `accession` column plus either an `embedding` list-typed column
+or `e0..eN` numeric columns.
+
+Programmatic use is also supported:
 
 1. Compute embeddings for your FASTA via `protea-backends` (ESM, T5, Ankh, ESM-C).
 2. Download reference embeddings + annotations from PROTEA via its REST API
