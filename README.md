@@ -92,9 +92,9 @@ predictions = predict(query_embeddings, ref_embeddings, ref_annotations, parent_
 
 ## Running predictions on a FASTA file
 
-`protea-method` ships a LAFA-ready submission container (LAFA-CONTAINER.1).
-The bundled `method_main.py` entrypoint accepts the LAFA standard interface
-(FASTA inputs, GAF annotations, OBO graph, 3-column TSV output) and is the
+`protea-method` ships a LAFA-ready submission container. The bundled
+`method_main.py` entrypoint accepts the LAFA standard interface (FASTA
+inputs, GAF annotations, OBO graph, 3-column TSV output) and is the
 script the Docker image runs.
 
 ```bash
@@ -107,11 +107,39 @@ See `docker/example_run.sh` for the full invocation. The mount-point
 contract follows the LAFA container guide: `./data:/app/data:ro` for inputs
 and `./output:/app/output:rw` for predictions.
 
-In this slice the embedding backend is bind-mounted as parquet files
-(`--query_embeds`, `--reference_embeds`). Wiring an in-container ESM /
-ProstT5 embedder is the LAFA-EMB.1 follow-up. The two parquet files must
-carry an `accession` column plus either an `embedding` list-typed column
-or `e0..eN` numeric columns.
+### Self-contained mode
+
+Omit `--query_embeds` and `--reference_embeds` and the container computes
+embeddings in-process via a `protea-backends` plugin (default
+`esm2_t36_3B`, the LB.2 v226 champion config). Computed embeddings are
+cached under `$LAFA_EMBED_CACHE` (`/app/output/.embed_cache` inside the
+image) keyed by `(backend_id, fasta_sha256)`, so re-runs on the same
+FASTA skip the multi-hour PLM forward pass.
+
+```bash
+bash docker/example_run_selfcontained.sh
+```
+
+The HuggingFace cache lives at `/app/.hf-cache` inside the image; mount
+a host directory to that path (`-v hf-cache:/app/.hf-cache`) to avoid
+re-downloading the ~12 GB ESM-2 3B weights on every fresh container.
+
+Accepted `--backend_id` values: `esm2_t36_3B` (default), `esm2_t33_650M`
+(lighter, ~2.5 GB), `prost_t5_xl_uniref50` (cross-check), and
+`mock_constant` (tests only). Install the matching extras group for the
+real PLMs:
+
+```bash
+pip install "protea-method[esm]"  # esm2_t36_3B + esm2_t33_650M
+pip install "protea-method[t5]"   # prost_t5_xl_uniref50
+```
+
+### Bind-mount mode
+
+For deployments that already materialise PLM embeddings out-of-band,
+pass `--query_embeds` / `--reference_embeds` to skip the in-container
+embedder. The two parquet files must carry an `accession` column plus
+either an `embedding` list-typed column or `e0..eN` numeric columns.
 
 Programmatic use is also supported:
 
