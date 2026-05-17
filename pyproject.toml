@@ -38,12 +38,27 @@ faiss-cpu = ">=1.7"
 # install path (`pip install protea-method`) stays slim and
 # torch-free.
 torch = { version = ">=2.0,<3.0", optional = true }
+# In-container embedding extras (LAFA-EMB.1). protea-backends ships
+# the ESM / T5 / Ankh / ESM-C plugins behind its own extras; pulling
+# the package only with [esm] / [t5] keeps the wheel set minimal in
+# the corresponding installs of this package.
+transformers = { version = ">=4.40", optional = true }
+sentencepiece = { version = ">=0.2", optional = true }
+protea-backends = { git = "https://github.com/frapercan/protea-backends.git", branch = "main", optional = true }
 
 [tool.poetry.extras]
 # `pip install protea-method[mil]` enables the MIL head. CPU users
 # get the default pypi wheel; GPU users follow the README recipe to
 # swap in the CUDA wheel after the base install.
 mil = ["torch"]
+# `pip install protea-method[esm]` enables the in-container ESM-2
+# embedder used by LAFA self-contained mode. Brings torch +
+# transformers + protea-backends. Champion config esm2_t36_3B
+# downloads ~12 GB of weights on first run (HF_HOME cached).
+esm = ["torch", "transformers", "protea-backends"]
+# `pip install protea-method[t5]` enables the ProstT5 / ProtT5
+# embedder. Adds sentencepiece on top of the esm extras stack.
+t5 = ["torch", "transformers", "sentencepiece", "protea-backends"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=7"
@@ -90,4 +105,5 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers"
 markers = [
     "regression_v226: end-to-end regression against the LB.2 v226 champion (selective avg Fmax 0.6215). Skipped unless PROTEA_LAB_DATA + lab fixtures are present.",
+    "requires_esm2: integration test against the real ESM-2 backend. Skipped unless PROTEA_HAS_ESM2=1 in the environment.",
 ]

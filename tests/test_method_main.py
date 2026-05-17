@@ -78,8 +78,31 @@ def test_method_main_errors_when_input_missing(tmp_path: Path) -> None:
     assert rc == 2
 
 
-def test_method_main_errors_when_embeds_omitted(tmp_path: Path) -> None:
-    """Until LAFA-EMB.1 wires the embedder, omitting embeddings must fail."""
+def test_method_main_self_contained_via_mock_backend(tmp_path: Path) -> None:
+    """LAFA-EMB.1: omitting embeddings triggers the in-container embedder."""
+    module = _load_method_main()
+    output = tmp_path / "preds.tsv"
+    cache_dir = tmp_path / "embed-cache"
+    rc = module.main([  # type: ignore[attr-defined]
+        "--query_file", str(FIXTURES / "tiny.fasta"),
+        "--train_sequences", str(FIXTURES / "tiny.fasta"),
+        "--annot_file", str(FIXTURES / "tiny.gaf"),
+        "--graph", str(FIXTURES / "tiny.obo"),
+        "--output_file", str(output),
+        "--backend_id", "mock_constant",
+        "--embed_cache_dir", str(cache_dir),
+        "--top_k", "2",
+    ])
+    assert rc == 0
+    assert output.exists()
+    # Cache miss on first run should have persisted .npz + .acc.txt under
+    # the mock_constant prefix.
+    cached = list(cache_dir.rglob("*.npz"))
+    assert cached, "expected the mock backend to populate the cache"
+
+
+def test_method_main_errors_when_only_one_embeds_given(tmp_path: Path) -> None:
+    """Supplying only one of the two embed flags must be a clean error."""
     module = _load_method_main()
     rc = module.main([  # type: ignore[attr-defined]
         "--query_file", str(FIXTURES / "tiny.fasta"),
@@ -87,5 +110,6 @@ def test_method_main_errors_when_embeds_omitted(tmp_path: Path) -> None:
         "--annot_file", str(FIXTURES / "tiny.gaf"),
         "--graph", str(FIXTURES / "tiny.obo"),
         "--output_file", str(tmp_path / "out.tsv"),
+        "--query_embeds", str(tmp_path / "q.parquet"),
     ])
     assert rc == 2

@@ -18,20 +18,21 @@ runs at start-up:
        --graph /app/data/go-basic.obo \\
        --output_file /app/output/predictions.tsv.gz
 
-Scope of this slice
+Two embedding paths
 -------------------
 
-The LAFA-CONTAINER.1 slice ships the container plumbing only:
-
-* CLI argument parsing matching the LAFA spec
-* FASTA / GAF / OBO input validation (file existence checks)
-* Output TSV writing through :func:`protea_method.io.write_lafa_tsv`
-* Pre-computed embedding consumption via ``--query_embeds`` /
-  ``--reference_embeds`` (parquet files bind-mounted in)
-
-Wiring an in-container embedding backend (ESM / ProstT5) is the
-LAFA-EMB.1 slice. Without ``--query_embeds`` and ``--reference_embeds``
-the script exits with a clear error pointing at that follow-up.
+* **Bind-mount mode** (LAFA-CONTAINER.1, PR #19): pass
+  ``--query_embeds`` / ``--reference_embeds`` pointing at parquet
+  files with pre-computed embeddings. The slim image (no torch, no
+  HuggingFace cache) is enough.
+* **Self-contained mode** (LAFA-EMB.1, this slice): omit the two
+  embed flags; the entrypoint reads each FASTA, runs the configured
+  backend (``--backend esm2_t36_3B`` by default), caches the result
+  under ``LAFA_EMBED_CACHE`` (``/app/output/.embed_cache`` in the
+  image), and proceeds to predict. Requires the ``[esm]`` extras
+  group at install time; the ESM-2 weights are downloaded by
+  HuggingFace on first run into ``HF_HOME`` (mount a host directory
+  to that path to avoid re-downloading).
 """
 
 from __future__ import annotations
@@ -45,6 +46,11 @@ import numpy as np
 
 from protea_method.io import read_fasta, read_gaf, read_obo, write_lafa_tsv
 from protea_method.pipeline import PredictConfig, predict
+
+#: Default backend id used when ``--query_embeds`` / ``--reference_embeds``
+#: are omitted. ESM-2 3B matches the LB.2 v226 champion config; users
+#: who want a lighter run can pass ``--backend_id esm2_t33_650M``.
+DEFAULT_BACKEND_ID: str = "esm2_t36_3B"
 
 #: Mapping from GAF aspect letter (``F`` / ``P`` / ``C``) to the
 #: canonical PROTEA aspect code. They already match; the indirection
@@ -87,15 +93,44 @@ def _build_parser() -> argparse.ArgumentParser:
         "--query_embeds", type=Path, default=None,
         help=(
             "Optional parquet with pre-computed query embeddings. "
-            "Required until LAFA-EMB.1 wires an in-container embedder."
+            "When omitted the embeddings are computed in-container via "
+            "the backend selected with --backend_id."
         ),
     )
     parser.add_argument(
         "--reference_embeds", type=Path, default=None,
         help=(
             "Optional parquet with pre-computed reference embeddings. "
-            "Required until LAFA-EMB.1 wires an in-container embedder."
+            "When omitted the embeddings are computed in-container via "
+            "the backend selected with --backend_id."
         ),
+    )
+    parser.add_argument(
+        "--backend_id", default=DEFAULT_BACKEND_ID,
+        help=(
+            "Friendly id of the PLM backend used in self-contained mode "
+            "(default: esm2_t36_3B, champion config). Accepted ids: "
+            "esm2_t36_3B, esm2_t33_650M, prost_t5_xl_uniref50, "
+            "mock_constant (tests only)."
+        ),
+    )
+    parser.add_argument(
+        "--embed_cache_dir", type=Path, default=None,
+        help=(
+            "Directory for caching computed embeddings. Falls back to "
+            "$LAFA_EMBED_CACHE then to no cache."
+        ),
+    )
+    parser.add_argument(
+        "--embed_device", default="auto",
+        help=(
+            "Torch device for the backend (auto / cpu / cuda / cuda:0). "
+            "auto picks cuda when available else cpu."
+        ),
+    )
+    parser.add_argument(
+        "--embed_batch_size", type=int, default=8,
+        help="Batch size for the embedding plugin (default: 8).",
     )
     parser.add_argument(
         "--top_k", type=int, default=5,
@@ -141,8 +176,8 @@ def _validate_paths(args: argparse.Namespace) -> list[str]:
         )
     if (args.query_embeds is None) != (args.reference_embeds is None):
         errors.append(
-            "--query_embeds and --reference_embeds must be provided together "
-            "(or both omitted once LAFA-EMB.1 wires the embedding backend)."
+            "--query_embeds and --reference_embeds must be supplied together. "
+            "Omit both to compute embeddings in-container via --backend_id."
         )
     return errors
 
@@ -237,6 +272,71 @@ def _load_embeddings(
     )
 
 
+def _embed_via_backend(
+    fasta_path: Path,
+    accessions: list[str],
+    args: argparse.Namespace,
+) -> np.ndarray:
+    """Compute embeddings via :func:`protea_method.embed.embed_fasta`.
+
+    Importing the embed module is deferred to here so the bind-mount
+    path (which is the only one exercised in CI) does not pay the cost
+    of the protea-backends import or trigger the ``[esm]`` extras
+    requirement.
+    """
+    from protea_method.embed import embed_fasta
+
+    table = embed_fasta(
+        fasta_path,
+        backend_id=args.backend_id,
+        cache_dir=args.embed_cache_dir,
+        device=args.embed_device,
+        batch_size=args.embed_batch_size,
+    )
+    missing = [a for a in accessions if a not in table]
+    if missing:
+        sample = ", ".join(missing[:5])
+        raise ValueError(
+            f"backend {args.backend_id!r} did not return embeddings for "
+            f"{len(missing)} accessions (first: {sample})"
+        )
+    return np.stack([np.asarray(table[a], dtype=np.float32) for a in accessions])
+
+
+def _resolve_embeddings(
+    args: argparse.Namespace,
+    query_accessions: list[str],
+    reference_accessions: list[str],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Materialise query + reference embedding matrices.
+
+    Bind-mount mode (both ``--query_embeds`` and ``--reference_embeds``
+    supplied) calls :func:`_load_embeddings`. Self-contained mode
+    routes through :func:`_embed_via_backend` and ``embed_fasta``.
+    """
+    if args.query_embeds is not None and args.reference_embeds is not None:
+        sys.stderr.write(
+            f"[lafa] loading bind-mounted embeddings "
+            f"(queries={len(query_accessions)}, "
+            f"references={len(reference_accessions)})\n"
+        )
+        query_embeds = _load_embeddings(args.query_embeds, query_accessions)
+        reference_embeds = _load_embeddings(
+            args.reference_embeds, reference_accessions,
+        )
+        return query_embeds, reference_embeds
+
+    sys.stderr.write(
+        f"[lafa] self-contained mode: backend={args.backend_id} "
+        f"device={args.embed_device}\n"
+    )
+    query_embeds = _embed_via_backend(args.query_file, query_accessions, args)
+    reference_embeds = _embed_via_backend(
+        args.train_sequences, reference_accessions, args,
+    )
+    return query_embeds, reference_embeds
+
+
 def _run(args: argparse.Namespace) -> int:
     """Top-level orchestration. Returns the process exit code."""
     sys.stderr.write(f"[lafa] loading FASTA: {args.query_file}\n")
@@ -250,14 +350,6 @@ def _run(args: argparse.Namespace) -> int:
         args.annot_file, obo,
     )
 
-    if args.query_embeds is None or args.reference_embeds is None:
-        sys.stderr.write(
-            "[lafa] error: --query_embeds and --reference_embeds are "
-            "required in this slice (LAFA-CONTAINER.1). The in-container "
-            "embedding backend is deferred to LAFA-EMB.1.\n"
-        )
-        return 2
-
     query_accessions = list(queries.keys())
     reference_accessions = [a for a in references.keys() if a in annotations]
     if not reference_accessions:
@@ -266,12 +358,9 @@ def _run(args: argparse.Namespace) -> int:
             "supplied GAF; check that --annot_file matches --train_sequences.\n"
         )
         return 3
-    sys.stderr.write(
-        f"[lafa] loading embeddings (queries={len(query_accessions)}, "
-        f"references={len(reference_accessions)})\n"
+    query_embeds, reference_embeds = _resolve_embeddings(
+        args, query_accessions, reference_accessions,
     )
-    query_embeds = _load_embeddings(args.query_embeds, query_accessions)
-    reference_embeds = _load_embeddings(args.reference_embeds, reference_accessions)
 
     cfg = PredictConfig(
         k=args.top_k,
