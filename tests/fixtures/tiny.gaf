@@ -1,0 +1,6 @@
+!gaf-version: 2.2
+!date-generated: 2026-05-17
+UniProtKB	P00001	GENE1		GO:0008150	PMID:0	IDA		P	process A	gene1	protein	taxon:9606	20260101	UniProt
+UniProtKB	P00001	GENE1		GO:0003674	PMID:0	IBA		F	function A	gene1	protein	taxon:9606	20260101	UniProt
+UniProtKB	P00002	GENE2		GO:0005575	PMID:0	IEA		C	component A	gene2	protein	taxon:9606	20260101	UniProt
+UniProtKB	P00003	GENE3		GO:0008150	PMID:0	IDA		P	process A	gene3	protein	taxon:9606	20260101	UniProt
