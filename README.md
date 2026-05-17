@@ -134,6 +134,20 @@ pip install "protea-method[esm]"  # esm2_t36_3B + esm2_t33_650M
 pip install "protea-method[t5]"   # prost_t5_xl_uniref50
 ```
 
+### Publishing to FunctionBench
+
+The image is the LAFA submission carrier for `https://functionbench.net/`.
+Three documents in `docker/` cover the publishing path:
+
+| File | Purpose |
+|------|---------|
+| [`docker/DOCKERHUB_README.md`](docker/DOCKERHUB_README.md) | Long-form repository description to paste into the DockerHub "Full description" field. |
+| [`docker/FUNCTIONBENCH_METHODCARD.md`](docker/FUNCTIONBENCH_METHODCARD.md) | One-page method card to paste into the FunctionBench submission form, including the validation numbers. |
+| [`docker/RELEASE_RUNBOOK.md`](docker/RELEASE_RUNBOOK.md) | Manual numbered checklist (build, smoke test, push, submit, tag a GitHub release). |
+
+The runbook is operator-driven and intentionally manual; no CI job
+performs the DockerHub push.
+
 ### Bind-mount mode
 
 For deployments that already materialise PLM embeddings out-of-band,
