@@ -88,3 +88,6 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q --strict-markers"
+markers = [
+    "regression_v226: end-to-end regression against the LB.2 v226 champion (selective avg Fmax 0.6215). Skipped unless PROTEA_LAB_DATA + lab fixtures are present.",
+]

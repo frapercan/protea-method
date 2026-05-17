@@ -24,6 +24,7 @@ Two modes are supported via ``PredictConfig.aspect_separated``:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import lightgbm as lgb
@@ -33,6 +34,20 @@ from protea_method.anc2vec import Anc2VecIndex
 from protea_method.feature_enricher import ASPECT_CODES, enrich_v6_features
 from protea_method.knn_search import search_knn
 from protea_method.reranker import apply_reranker
+
+# Long-form aspect names accepted by ``load_boosters_by_aspect``. Maps to
+# the short ``F`` / ``P`` / ``C`` codes the rest of the pipeline uses.
+_ASPECT_ALIASES: dict[str, str] = {
+    "F": "F",
+    "P": "P",
+    "C": "C",
+    "mfo": "F",
+    "bpo": "P",
+    "cco": "C",
+    "MFO": "F",
+    "BPO": "P",
+    "CCO": "C",
+}
 
 
 @dataclass(frozen=True)
@@ -57,9 +72,14 @@ class PredictConfig:
         If set, drop neighbours with distance > threshold before
         accumulating votes.
     aspect_separated:
-        Run one KNN per GO aspect (P, F, C). Reserved for a follow-up
-        slice; the current implementation only supports the unified
-        single-KNN path (``False``).
+        Run one KNN per GO aspect (``F``, ``P``, ``C``) over
+        aspect-filtered reference pools and union the per-aspect
+        candidate sets before scoring. Mirrors the per-aspect search
+        the lab champion config (``bench-v1-K5-v226-lineage``,
+        selective avg 0.6215 on v226) trained against; pair with
+        ``boosters_by_aspect`` to reproduce the selective-rerank
+        path. When ``False`` the orchestrator runs a single unified
+        KNN across all reference embeddings.
     compute_v6_features:
         Run the v6 feature enrichment pass (Anc2Vec centroids, PCA,
         tax voters). Disable to skip when a downstream consumer does
@@ -384,6 +404,70 @@ def _propagate_pair_features(
             row[key] = pf[key]
 
 
+def load_boosters_by_aspect(directory: str | Path) -> dict[str, lgb.Booster]:
+    """Load three per-aspect LightGBM artefacts from a directory.
+
+    Expects one artefact per GO aspect, named either ``F.txt`` /
+    ``P.txt`` / ``C.txt`` (short codes) or ``mfo.txt`` / ``bpo.txt`` /
+    ``cco.txt`` (LAFA-style long codes). Other extensions (``.lgb``,
+    ``.bin``, ``.model``) are also accepted; LightGBM's text format is
+    extension-agnostic.
+
+    Returns a mapping ``{short_code: Booster}`` keyed on ``F``, ``P``,
+    and ``C``. Raises ``FileNotFoundError`` if the directory is missing
+    and ``ValueError`` if no aspect-named artefacts are found or two
+    files target the same aspect (e.g. both ``F.txt`` and ``mfo.txt``
+    present). Partial coverage (one or two aspects) is allowed; the
+    selective-rerank path handles missing aspects by leaving those
+    predictions unscored.
+    """
+    root = Path(directory)
+    if not root.is_dir():
+        raise FileNotFoundError(f"booster directory not found: {root}")
+    out: dict[str, lgb.Booster] = {}
+    seen_sources: dict[str, str] = {}
+    for path in sorted(root.iterdir()):
+        if not path.is_file():
+            continue
+        alias_key = path.stem
+        if alias_key not in _ASPECT_ALIASES:
+            continue
+        aspect = _ASPECT_ALIASES[alias_key]
+        if aspect in out:
+            raise ValueError(
+                f"multiple artefacts target aspect {aspect!r}: "
+                f"{seen_sources[aspect]} and {path.name}",
+            )
+        out[aspect] = lgb.Booster(model_file=str(path))
+        seen_sources[aspect] = path.name
+    if not out:
+        raise ValueError(
+            f"no per-aspect booster artefacts found in {root}; "
+            "expected files named F/P/C or mfo/bpo/cco",
+        )
+    return out
+
+
+def _validate_aspect_boosters(boosters: dict[str, lgb.Booster]) -> None:
+    """Refuse boosters keyed by anything other than ``F`` / ``P`` / ``C``.
+
+    The selective-rerank path keys on the row ``aspect`` field which
+    the rest of the pipeline writes as a single-letter short code. A
+    long-code key (``mfo`` / ``bpo`` / ``cco``) silently routes zero
+    rows; surface that misconfiguration as a ``ValueError`` instead.
+    """
+    if not boosters:
+        return
+    allowed = set(ASPECT_CODES)
+    bad = sorted(k for k in boosters if k not in allowed)
+    if bad:
+        raise ValueError(
+            f"boosters_by_aspect keys must be a subset of {sorted(allowed)}; "
+            f"got disallowed keys {bad}. Use ``load_boosters_by_aspect`` to "
+            "normalise long-form names (mfo/bpo/cco) into F/P/C.",
+        )
+
+
 def predict(
     *,
     query_accessions: list[str],
@@ -422,6 +506,9 @@ def predict(
     without an entry stay unscored.
     """
     cfg = config or PredictConfig()
+
+    if boosters_by_aspect:
+        _validate_aspect_boosters(boosters_by_aspect)
 
     if not query_accessions or query_embeddings.size == 0:
         return []
@@ -533,4 +620,4 @@ def _score_per_aspect(
             predictions[i]["reranker_score"] = float(score)
 
 
-__all__ = ["PredictConfig", "predict"]
+__all__ = ["PredictConfig", "load_boosters_by_aspect", "predict"]

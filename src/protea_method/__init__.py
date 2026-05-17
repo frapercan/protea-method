@@ -9,7 +9,7 @@ from protea_method.feature_enricher import (
 from protea_method.knn_search import search_knn
 from protea_method.lineage import LINEAGE_FEATURE_KEYS, compute_lineage_features
 from protea_method.pca_cache import load_or_fit_pca_state
-from protea_method.pipeline import PredictConfig, predict
+from protea_method.pipeline import PredictConfig, load_boosters_by_aspect, predict
 from protea_method.reranker import (
     ALL_FEATURES,
     CATEGORICAL_FEATURES,
@@ -47,6 +47,7 @@ __all__ = [
     "fit_embedding_pca",
     "get_index",
     "infer_active_feature_families",
+    "load_boosters_by_aspect",
     "load_from_bytes",
     "load_or_fit_pca_state",
     "model_from_string",
