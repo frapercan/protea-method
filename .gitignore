@@ -20,3 +20,6 @@ coverage.xml
 
 # Poetry
 poetry.lock
+
+# Sphinx build output
+docs/build/
