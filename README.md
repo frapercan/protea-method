@@ -1,16 +1,39 @@
 # protea-method
 
-Pure inference path of PROTEA, packaged as a slim standalone library.
-Contains KNN search, feature enrichment, GO ancestor embedding (Anc2Vec),
-and reranker-apply logic. No FastAPI, no SQLAlchemy, no protea-core.
+**LAFA submission layer that wraps the PROTEA pipeline for FunctionBench.**
 
-This package is the algorithmic core that PROTEA's `predict_go_terms`
-operation delegates to at runtime. It is also the package shipped to
-consumers who want to run predictions without the full platform stack
-(no Postgres, no RabbitMQ, no workers required).
+`protea-method` is the pure inference path of the PROTEA protein-annotation
+stack, packaged as a slim standalone library. It implements the standard LAFA
+container interface so that the same code that powers the PROTEA platform
+worker can be shipped as a self-contained Docker image for
+[FunctionBench](https://functionbench.net/) submissions.
 
-**Status:** v0.0.1 (experimental, pre-1.0; SemVer-coordinated with `protea-contracts`; breaking changes to the feature schema require a major bump).
-See the [PROTEA stack architecture](https://github.com/frapercan/PROTEA#repositories-in-the-protea-stack) for where this package fits.
+The library contains KNN search, GO ancestor embedding (Anc2Vec), feature
+enrichment (alignment, taxonomy, Anc2Vec, lineage), and LightGBM re-ranker-apply logic. It has no runtime dependency
+on FastAPI, SQLAlchemy, or protea-core. No Postgres, no RabbitMQ, no workers
+required for standalone use.
+
+**Status:** v0.3.0 (beta; SemVer coordinated with `protea-contracts`; breaking
+changes to the feature schema require a major bump).
+
+<!-- protea-stack:start -->
+
+## Repositories in the PROTEA stack
+
+Single source of truth: [`docs/source/_data/stack.yaml`](https://github.com/frapercan/PROTEA/blob/develop/docs/source/_data/stack.yaml) in PROTEA. Run `python scripts/sync_stack.py` to regenerate this block.
+
+| Repo | Role | Status | Summary |
+|------|------|--------|---------|
+| [PROTEA](https://github.com/frapercan/PROTEA) | Platform | `active` | Backend platform. Hosts the ORM, job queue, FastAPI surface, frontend, and orchestration. |
+| [protea-contracts](https://github.com/frapercan/protea-contracts) | Contracts | `beta` | Shared contract surface. ABCs, pydantic payloads, feature schema, schema_sha. Imported by every other repo. |
+| **protea-method** (this repo) | Inference | `active` | LAFA submission layer. Pure inference path (KNN, feature compute, reranker apply). Wrapped by the LAFA container for FunctionBench submissions. |
+| [protea-sources](https://github.com/frapercan/protea-sources) | Source plugin | `skeleton` | Annotation source plugins (GOA, QuickGO, UniProt). Discovered via Python entry_points. |
+| [protea-runners](https://github.com/frapercan/protea-runners) | Runner plugin | `skeleton` | Experiment runner plugins (LightGBM lab, KNN baseline, future GNN). Discovered via Python entry_points. |
+| [protea-backends](https://github.com/frapercan/protea-backends) | Backend plugin | `skeleton` | Protein language model embedding backends (ESM family, T5/ProstT5, Ankh, ESM3-C). Discovered via Python entry_points. |
+| [protea-reranker-lab](https://github.com/frapercan/protea-reranker-lab) | Lab | `active` | LightGBM reranker training lab. Pulls datasets from PROTEA, trains boosters, publishes them back via /reranker-models/import-by-reference. |
+| [cafaeval-protea](https://github.com/frapercan/cafaeval-protea) | Evaluator | `active` | Standalone fork of cafaeval (CAFA-evaluator-PK) with the PK-coverage fix and a bit-exact parity guarantee against the upstream. |
+
+<!-- protea-stack:end -->
 
 ## Install
 
@@ -18,28 +41,31 @@ See the [PROTEA stack architecture](https://github.com/frapercan/PROTEA#reposito
 pip install protea-method
 ```
 
-The default install is torch-free: KNN search, feature enrichment,
-Anc2Vec, lineage, and the LightGBM reranker run on numpy + faiss-cpu
-+ lightgbm only.
+The default install is torch-free. KNN search, feature enrichment, Anc2Vec,
+lineage, and the LightGBM re-ranker run on numpy + faiss-cpu + lightgbm only.
 
-The optional gated-attention MIL head (`protea_method.mil`) requires
-torch and is opt-in via the `mil` extra:
+The optional gated-attention MIL head (`protea_method.mil`) requires torch and
+is opt-in via the `mil` extra:
 
 ```bash
 pip install "protea-method[mil]"
 ```
 
-For GPU inference with the MIL head, install the extra first (which
-brings in the CPU torch wheel) and then swap in the CUDA wheel:
+For in-container PLM embedding (self-contained LAFA mode), install the matching
+backend extras:
 
 ```bash
-pip install "protea-method[mil]"
+pip install "protea-method[esm]"   # esm2_t36_3B + esm2_t33_650M
+pip install "protea-method[t5]"    # prost_t5_xl_uniref50
+```
+
+For GPU inference, install the extras first (they bring in the CPU torch wheel)
+and then swap in the CUDA wheel:
+
+```bash
+pip install "protea-method[esm]"
 pip install torch --index-url https://download.pytorch.org/whl/cu121
 ```
-
-Importing `protea_method.mil.head` without the `mil` extra raises a
-clear `ImportError` pointing back at this install recipe; the rest of
-`protea_method` keeps importing cleanly without torch on the path.
 
 ## Quickstart
 
@@ -47,7 +73,7 @@ clear `ImportError` pointing back at this install recipe; the rest of
 import numpy as np
 from protea_method import predict, PredictConfig
 
-# Prepare inputs (float16 or float32 numpy arrays, shape [N, D])
+# Float16 or float32 numpy arrays, shape [N, D]
 query_embeddings = np.load("query_embeddings.npy")
 ref_embeddings   = np.load("ref_embeddings.npy")
 
@@ -57,14 +83,13 @@ ref_annotations = [["GO:0008150", "GO:0003674"], ...]
 # GO parent map loaded from a parquet or JSON export
 parent_map = {}  # {go_id: [parent_go_id, ...]}
 
-# Run predictions
 cfg = PredictConfig(k=15)
 predictions = predict(query_embeddings, ref_embeddings, ref_annotations, parent_map, cfg)
 # predictions: list of dicts {"go_id": str, "score": float, "aspect": str}
 ```
 
-For scenarios where a PROTEA-trained LightGBM booster is available, the
-predictions are automatically re-ranked:
+When a PROTEA-trained LightGBM booster is available, predictions are
+automatically re-ranked:
 
 ```python
 from protea_method.reranker import load_from_bytes
@@ -87,114 +112,122 @@ predictions = predict(query_embeddings, ref_embeddings, ref_annotations, parent_
 | `anc2vec.py` | Ancestor-embedding index for GO DAG proximity features |
 | `lineage.py` | Taxonomic lineage distance features |
 | `pca_cache.py` | Lazy PCA fitting / loading for embedding compression |
-| `io/lafa_tsv.py` | 3-column LAFA TSV writer (Query_ID, GO_Term, Score) |
 | `io/loaders.py` | FASTA / GAF / OBO readers for the container entrypoint |
+| `io/lafa_tsv.py` | 3-column LAFA TSV writer (Query_ID, GO_Term, Score) |
+| `embed/backend.py` | Backend resolver and `embed_fasta` orchestrator (self-contained mode) |
+| `embed/cache.py` | Disk-backed embedding cache keyed by `(backend_id, fasta_sha256)` |
+| `method_main.py` | LAFA container entrypoint; the script the Docker image runs |
 
-## Running predictions on a FASTA file
+## Running as a LAFA container
 
-`protea-method` ships a LAFA-ready submission container. The bundled
-`method_main.py` entrypoint accepts the LAFA standard interface (FASTA
-inputs, GAF annotations, OBO graph, 3-column TSV output) and is the
-script the Docker image runs.
+Build the image:
 
 ```bash
 docker build -t protea-method-lafa:latest .
+```
 
+### Bind-mount mode (pre-computed embeddings)
+
+Pass `--query_embeds` / `--reference_embeds` pointing at parquet files with
+pre-computed embeddings. The slim image (no torch, no HuggingFace cache) is
+sufficient. Mount your data and output directories:
+
+```bash
 bash docker/example_run.sh
 ```
 
-See `docker/example_run.sh` for the full invocation. The mount-point
-contract follows the LAFA container guide: `./data:/app/data:ro` for inputs
-and `./output:/app/output:rw` for predictions.
+The mount-point contract follows the LAFA container guide:
+`./data:/app/data:ro` for inputs and `./output:/app/output:rw` for predictions.
 
-### Self-contained mode
+Programmatic alternative (no Docker):
 
-Omit `--query_embeds` and `--reference_embeds` and the container computes
+1. Compute embeddings for your FASTA via `protea-backends` (ESM, T5, Ankh, ESM-C).
+2. Download reference embeddings + annotations from PROTEA via its REST API.
+3. Call `predict(...)` from this package directly.
+
+### Self-contained mode (in-container PLM embedder)
+
+Omit `--query_embeds` and `--reference_embeds`. The container computes
 embeddings in-process via a `protea-backends` plugin (default
-`esm2_t36_3B`, the LB.2 v226 champion config). Computed embeddings are
-cached under `$LAFA_EMBED_CACHE` (`/app/output/.embed_cache` inside the
-image) keyed by `(backend_id, fasta_sha256)`, so re-runs on the same
-FASTA skip the multi-hour PLM forward pass.
+`esm2_t36_3B`). Computed embeddings are cached under `$LAFA_EMBED_CACHE`
+(`/app/output/.embed_cache` inside the image) keyed by `(backend_id,
+fasta_sha256)`, so re-runs on the same FASTA skip the multi-hour PLM forward
+pass.
 
 ```bash
 bash docker/example_run_selfcontained.sh
 ```
 
-The HuggingFace cache lives at `/app/.hf-cache` inside the image; mount
-a host directory to that path (`-v hf-cache:/app/.hf-cache`) to avoid
-re-downloading the ~12 GB ESM-2 3B weights on every fresh container.
-
-Accepted `--backend_id` values: `esm2_t36_3B` (default), `esm2_t33_650M`
-(lighter, ~2.5 GB), `prost_t5_xl_uniref50` (cross-check), and
-`mock_constant` (tests only). Install the matching extras group for the
-real PLMs:
+Mount a host directory to `/app/.hf-cache` to avoid re-downloading the
+~12 GB ESM-2 3B weights on every fresh container:
 
 ```bash
-pip install "protea-method[esm]"  # esm2_t36_3B + esm2_t33_650M
-pip install "protea-method[t5]"   # prost_t5_xl_uniref50
+docker run -v hf-cache:/app/.hf-cache ...
 ```
 
-### Publishing to FunctionBench
+Accepted `--backend_id` values:
 
-The image is the LAFA submission carrier for `https://functionbench.net/`.
-Three documents in `docker/` cover the publishing path:
+| ID | Model | Size |
+|----|-------|------|
+| `esm2_t36_3B` (default) | `facebook/esm2_t36_3B_UR50D` | ~12 GB |
+| `esm2_t33_650M` | `facebook/esm2_t33_650M_UR50D` | ~2.5 GB |
+| `prost_t5_xl_uniref50` | `Rostlab/ProstT5` | cross-check |
+| `mock_constant` | deterministic constant vector | tests only |
 
-| File | Purpose |
-|------|---------|
-| [`docker/DOCKERHUB_README.md`](docker/DOCKERHUB_README.md) | Long-form repository description to paste into the DockerHub "Full description" field. |
-| [`docker/FUNCTIONBENCH_METHODCARD.md`](docker/FUNCTIONBENCH_METHODCARD.md) | One-page method card to paste into the FunctionBench submission form, including the validation numbers. |
-| [`docker/RELEASE_RUNBOOK.md`](docker/RELEASE_RUNBOOK.md) | Manual numbered checklist (build, smoke test, push, submit, tag a GitHub release). |
+## Releasing to DockerHub / Submitting to FunctionBench
 
-The runbook is operator-driven and intentionally manual; no CI job
-performs the DockerHub push.
+Three documents in `docker/` cover the full submission workflow. They are the
+primary operator reference for publishing a new version of the LAFA container:
 
-### Bind-mount mode
+| Document | Purpose |
+|----------|---------|
+| [`docker/RELEASE_RUNBOOK.md`](docker/RELEASE_RUNBOOK.md) | Manual numbered checklist: build, smoke test, push to DockerHub, submit to FunctionBench, tag a GitHub release. Start here. |
+| [`docker/DOCKERHUB_README.md`](docker/DOCKERHUB_README.md) | Long-form repository description to paste into the DockerHub "Full description" field when publishing a new image. |
+| [`docker/FUNCTIONBENCH_METHODCARD.md`](docker/FUNCTIONBENCH_METHODCARD.md) | One-page method card to paste into the FunctionBench submission form, including validation numbers. |
 
-For deployments that already materialise PLM embeddings out-of-band,
-pass `--query_embeds` / `--reference_embeds` to skip the in-container
-embedder. The two parquet files must carry an `accession` column plus
-either an `embedding` list-typed column or `e0..eN` numeric columns.
+The DockerHub push is intentionally manual (the runbook is operator-driven);
+no CI job performs it.
 
-Programmatic use is also supported:
+## Documentation
 
-1. Compute embeddings for your FASTA via `protea-backends` (ESM, T5, Ankh, ESM-C).
-2. Download reference embeddings + annotations from PROTEA via its REST API
-   (`GET /embedding-configs/{id}/embeddings` + `GET /prediction-sets/{id}/annotations`).
-3. Call `predict(...)` from this package.
+Full API reference is built with Sphinx autodoc. To build locally:
 
-Alternatively, start the full PROTEA stack and submit a `predict_go_terms`
-job via `POST /jobs`; the platform runs the same `predict` function internally.
+```bash
+pip install "protea-method[mil]" sphinx alabaster
+cd docs
+make html
+# Open docs/build/html/index.html
+```
+
+The docs cover `method_main`, all loaders (`io/loaders.py`, `io/lafa_tsv.py`),
+the in-container PLM embedder (`embed/`), and every public module in
+`protea_method`.
 
 ## Versioning
 
-SemVer 2.0.0. The version is coordinated with `protea-contracts`: any
-breaking change to the feature schema (field names, dtypes, ordering)
-requires a major-version bump here and forces re-training of every
-downstream LightGBM booster registered in PROTEA. PROTEA persists the
-`feature_schema_sha` of each trained booster and refuses to score with a
-booster whose schema digest drifts from the live inference pipeline.
+SemVer 2.0.0, coordinated with `protea-contracts`. Any breaking change to the
+feature schema (field names, dtypes, ordering) requires a major-version bump
+here and forces re-training of every downstream LightGBM booster registered in
+PROTEA. PROTEA persists the `feature_schema_sha` of each trained booster and
+refuses to score with a booster whose schema digest drifts from the live
+inference pipeline.
 
 ## Test
 
 ```bash
 poetry install
-poetry run pytest                      # ~50 unit tests, < 1 s
+poetry run pytest                            # ~50 unit tests, < 1 s
 poetry run pytest -v tests/test_pipeline.py  # end-to-end smoke
 poetry run ruff check .
 poetry run mypy --strict src
 ```
 
 All tests are import-cheap. No GPU or network access is required.
-Integration against a real PROTEA instance is tested at the
-`protea-core` layer, not here.
 
 ## Contributing
 
-Contributions are welcome from research institutions and individual
-developers.
-
-**Branch strategy:** all changes target `develop`; `main` tracks
-stable releases only.
+**Branch strategy:** all changes target `develop`; `main` tracks stable
+releases only.
 
 ```bash
 git clone https://github.com/frapercan/protea-method.git
@@ -204,7 +237,7 @@ git checkout -b feature/my-feature
 
 poetry install
 
-# Make your changes, then verify locally:
+# Verify locally before opening a PR:
 poetry run pytest
 poetry run ruff check .
 poetry run mypy --strict src
@@ -213,38 +246,14 @@ poetry run mypy --strict src
 ```
 
 Key constraints:
+
 - **NEVER** use pgvector for KNN search. FAISS IVFFlat or numpy chunked
-  brute-force are the only allowed KNN backends here.
-- **No runtime deps** on `sqlalchemy`, `fastapi`, or `protea-core`. New
-  deps must be `optional` or justified in the PR description.
-- Public API is SemVer-ed; coordinate breaking changes with
-  `protea-contracts` versioning.
-
-## Documentation
-
-Source-level docstrings are rendered by Sphinx autodoc in PROTEA's main
-docs at **https://protea.readthedocs.io**. A local build is available
-from the PROTEA repo: `cd docs && make html`.
+  brute-force are the only allowed KNN backends.
+- **No runtime deps** on `sqlalchemy`, `fastapi`, or `protea-core`. New deps
+  must be optional or justified in the PR description.
+- Public API is SemVer-ed; coordinate breaking changes with `protea-contracts`
+  versioning.
 
 ## License
 
 MIT. See `LICENSE`.
-
-<!-- protea-stack:start -->
-
-## Repositories in the PROTEA stack
-
-Single source of truth: [`docs/source/_data/stack.yaml`](https://github.com/frapercan/PROTEA/blob/develop/docs/source/_data/stack.yaml) in PROTEA. Run `python scripts/sync_stack.py` to regenerate this block.
-
-| Repo | Role | Status | Summary |
-|------|------|--------|---------|
-| [PROTEA](https://github.com/frapercan/PROTEA) | Platform | `active` | Backend platform. Hosts the ORM, job queue, FastAPI surface, frontend, and orchestration. |
-| [protea-contracts](https://github.com/frapercan/protea-contracts) | Contracts | `beta` | Shared contract surface. ABCs, pydantic payloads, feature schema, schema_sha. Imported by every other repo. |
-| **protea-method** (this repo) | Inference | `active` | Pure inference path (KNN, feature compute, reranker apply). Bind-mounted by the LAFA containers. |
-| [protea-sources](https://github.com/frapercan/protea-sources) | Source plugin | `skeleton` | Annotation source plugins (GOA, QuickGO, UniProt). Discovered via Python entry_points. |
-| [protea-runners](https://github.com/frapercan/protea-runners) | Runner plugin | `skeleton` | Experiment runner plugins (LightGBM lab, KNN baseline, future GNN). Discovered via Python entry_points. |
-| [protea-backends](https://github.com/frapercan/protea-backends) | Backend plugin | `skeleton` | Protein language model embedding backends (ESM family, T5/ProstT5, Ankh, ESM3-C). Discovered via Python entry_points. |
-| [protea-reranker-lab](https://github.com/frapercan/protea-reranker-lab) | Lab | `active` | LightGBM reranker training lab. Pulls datasets from PROTEA, trains boosters, publishes them back via /reranker-models/import-by-reference. |
-| [cafaeval-protea](https://github.com/frapercan/cafaeval-protea) | Evaluator | `active` | Standalone fork of cafaeval (CAFA-evaluator-PK) with the PK-coverage fix and a bit-exact parity guarantee against the upstream. |
-
-<!-- protea-stack:end -->
