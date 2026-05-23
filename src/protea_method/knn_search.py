@@ -317,6 +317,10 @@ def _build_faiss_index(
 
     faiss_metric = faiss.METRIC_INNER_PRODUCT if use_ip else faiss.METRIC_L2
 
+    # `index` is a faiss.Index subclass and the concrete subtype depends on
+    # `index_type`. Annotate as Any so mypy strict accepts reassigning to
+    # IVF / HNSW variants below without union-narrowing complaints.
+    index: Any
     if index_type == "Flat":
         index = faiss.IndexFlatIP(dim) if use_ip else faiss.IndexFlatL2(dim)
     elif index_type == "IVFFlat":
