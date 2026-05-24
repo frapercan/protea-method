@@ -13,8 +13,10 @@ enrichment (alignment, taxonomy, Anc2Vec, lineage), and LightGBM re-ranker-apply
 on FastAPI, SQLAlchemy, or protea-core. No Postgres, no RabbitMQ, no workers
 required for standalone use.
 
-**Status:** v0.3.0 (beta; SemVer coordinated with `protea-contracts`; breaking
-changes to the feature schema require a major bump).
+**Status:** v0.3.0, production. Inference path is live: the Docker image is
+published to DockerHub and has been submitted to FunctionBench. SemVer
+coordinated with `protea-contracts`; breaking changes to the feature schema
+require a major bump.
 
 <!-- protea-stack:start -->
 
