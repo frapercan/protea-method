@@ -106,4 +106,5 @@ addopts = "-q --strict-markers"
 markers = [
     "regression_v226: end-to-end regression against the LB.2 v226 champion (selective avg Fmax 0.6215). Skipped unless PROTEA_LAB_DATA + lab fixtures are present.",
     "requires_esm2: integration test against the real ESM-2 backend. Skipped unless PROTEA_HAS_ESM2=1 in the environment.",
+    "gpu: tests that exercise the torch CUDA path. Skipped unless torch.cuda.is_available().",
 ]
