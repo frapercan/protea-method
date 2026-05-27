@@ -410,20 +410,24 @@ def _search_torch(
                     hits.append((ref_accessions[int(top_idx_cpu[row_i, col_i])], dist_val))
                 results.append(hits)
 
-    # Release CUDA tensors so the caching allocator does not retain VRAM
-    # between aspect iterations. Without this, callers that loop over the
-    # three GO aspects on a 500k+ reference corpus pile up ~10 GB on a
-    # 12 GB GPU, and the corpus-fits-in-VRAM safety check above (line
-    # ~343) falls back to CPU for the rest of the run, silently undoing
-    # the GPU speedup. Discovered 2026-05-27 on an RTX 3060 with the
-    # ankh-large embedding pool (1536 dim, 527k proteins, 3.2 GB per
-    # aspect copy). The `del R_t` ensures Python releases its reference
-    # before empty_cache asks the caching allocator to give VRAM back.
-    if device.type == "cuda":
-        del R_t
-        torch.cuda.empty_cache()
-
+    _release_corpus_vram(R_t, device)
     return results
+
+
+def _release_corpus_vram(R_t: Any, device: Any) -> None:
+    """Free the corpus tensor + empty the CUDA cache when on GPU.
+
+    Without this, looping ``_search_torch`` across the three GO aspects
+    pins ~10 GB on a 12 GB GPU and the corpus-fits-in-VRAM safety check
+    inside ``_search_torch`` flips the device back to CPU for the rest
+    of the run, silently undoing the GPU speedup. Discovered 2026-05-27
+    on RTX 3060 + ankh-large (1536 dim, 527k proteins, 3.2 GB per aspect
+    copy).
+    """
+    if device.type == "cuda":
+        import torch as _torch
+        del R_t
+        _torch.cuda.empty_cache()
 
 
 def _search_faiss(
