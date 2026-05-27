@@ -1,8 +1,8 @@
 """Sphinx configuration for protea-method."""
 
+import os
 import sys
 import types
-import os
 
 # Make the package importable from the source tree.
 sys.path.insert(0, os.path.abspath("../../src"))
