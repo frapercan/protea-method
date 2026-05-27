@@ -409,7 +409,6 @@ def _search_torch(
                         break
                     hits.append((ref_accessions[int(top_idx_cpu[row_i, col_i])], dist_val))
                 results.append(hits)
-
     _release_corpus_vram(R_t, device)
     return results
 
