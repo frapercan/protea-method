@@ -47,7 +47,7 @@
       "kind": "method",
       "path": "src/protea_method/knn_search.py",
       "name": "_search_faiss",
-      "line": 416,
+      "line": 432,
       "metric": 66,
       "threshold": 60
     },
@@ -56,8 +56,8 @@
       "kind": "method",
       "path": "src/protea_method/pipeline.py",
       "name": "predict",
-      "line": 471,
-      "metric": 109,
+      "line": 455,
+      "metric": 147,
       "threshold": 60
     },
     {
@@ -101,7 +101,7 @@
       "kind": "params",
       "path": "src/protea_method/knn_search.py",
       "name": "_search_faiss",
-      "line": 416,
+      "line": 432,
       "metric": 11,
       "threshold": 6
     },
@@ -110,7 +110,7 @@
       "kind": "params",
       "path": "src/protea_method/knn_search.py",
       "name": "_build_faiss_index",
-      "line": 484,
+      "line": 500,
       "metric": 10,
       "threshold": 6
     },
@@ -119,8 +119,26 @@
       "kind": "params",
       "path": "src/protea_method/pipeline.py",
       "name": "predict",
-      "line": 471,
-      "metric": 14,
+      "line": 414,
+      "metric": 15,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_method/pipeline.py::predict",
+      "kind": "params",
+      "path": "src/protea_method/pipeline.py",
+      "name": "predict",
+      "line": 435,
+      "metric": 15,
+      "threshold": 6
+    },
+    {
+      "key": "params::src/protea_method/pipeline.py::predict",
+      "kind": "params",
+      "path": "src/protea_method/pipeline.py",
+      "name": "predict",
+      "line": 455,
+      "metric": 15,
       "threshold": 6
     }
   ]
