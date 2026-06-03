@@ -514,6 +514,10 @@ def _build_faiss_index(
 
     faiss_metric = faiss.METRIC_INNER_PRODUCT if use_ip else faiss.METRIC_L2
 
+    # faiss ships no precise stubs; index is rebound to several concrete
+    # index classes across the branches (IVF/HNSW expose .nprobe/.hnsw),
+    # so annotate as Any to avoid spurious union-attr errors.
+    index: Any
     if index_type == "Flat":
         index = faiss.IndexFlatIP(dim) if use_ip else faiss.IndexFlatL2(dim)
     elif index_type == "IVFFlat":
