@@ -409,8 +409,24 @@ def _search_torch(
                         break
                     hits.append((ref_accessions[int(top_idx_cpu[row_i, col_i])], dist_val))
                 results.append(hits)
-
+    _release_corpus_vram(R_t, device)
     return results
+
+
+def _release_corpus_vram(R_t: Any, device: Any) -> None:
+    """Free the corpus tensor + empty the CUDA cache when on GPU.
+
+    Without this, looping ``_search_torch`` across the three GO aspects
+    pins ~10 GB on a 12 GB GPU and the corpus-fits-in-VRAM safety check
+    inside ``_search_torch`` flips the device back to CPU for the rest
+    of the run, silently undoing the GPU speedup. Discovered 2026-05-27
+    on RTX 3060 + ankh-large (1536 dim, 527k proteins, 3.2 GB per aspect
+    copy).
+    """
+    if device.type == "cuda":
+        import torch as _torch
+        del R_t
+        _torch.cuda.empty_cache()
 
 
 def _search_faiss(
@@ -498,6 +514,10 @@ def _build_faiss_index(
 
     faiss_metric = faiss.METRIC_INNER_PRODUCT if use_ip else faiss.METRIC_L2
 
+    # faiss ships no precise stubs; index is rebound to several concrete
+    # index classes across the branches (IVF/HNSW expose .nprobe/.hnsw),
+    # so annotate as Any to avoid spurious union-attr errors.
+    index: Any
     if index_type == "Flat":
         index = faiss.IndexFlatIP(dim) if use_ip else faiss.IndexFlatL2(dim)
     elif index_type == "IVFFlat":
