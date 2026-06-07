@@ -101,6 +101,53 @@ def test_method_main_self_contained_via_mock_backend(tmp_path: Path) -> None:
     assert cached, "expected the mock backend to populate the cache"
 
 
+def test_method_main_cutoff_rejects_future_obo(tmp_path: Path) -> None:
+    """--cutoff fails fast when the --graph ontology post-dates the cutoff.
+
+    The fixture OBO is data-version releases/2026-05-01, future of the v227
+    band cutoff (2025-09-04); the run must abort with a non-zero code before
+    writing any output.
+    """
+    module = _load_method_main()
+    output = tmp_path / "preds.tsv"
+    rc = module.main([  # type: ignore[attr-defined]
+        "--query_file", str(FIXTURES / "tiny.fasta"),
+        "--train_sequences", str(FIXTURES / "tiny.fasta"),
+        "--annot_file", str(FIXTURES / "tiny.gaf"),
+        "--graph", str(FIXTURES / "tiny.obo"),
+        "--output_file", str(output),
+        "--backend_id", "mock_constant",
+        "--embed_cache_dir", str(tmp_path / "embed-cache"),
+        "--cutoff", "v227",
+    ])
+    assert rc == 1
+    assert not output.exists()
+
+
+def test_method_main_cutoff_passes_on_congruent_obo(tmp_path: Path) -> None:
+    """A cutoff at/after the OBO date lets the run proceed end-to-end."""
+    module = _load_method_main()
+    query_embeds = tmp_path / "q.parquet"
+    reference_embeds = tmp_path / "r.parquet"
+    _embedding_parquet(query_embeds, ["P00001", "P00002", "P00003"])
+    _embedding_parquet(reference_embeds, ["P00001", "P00002", "P00003"])
+    output = tmp_path / "preds.tsv"
+    # tiny.obo is 2026-05-01; a cutoff date on/after it is congruent.
+    rc = module.main([  # type: ignore[attr-defined]
+        "--query_file", str(FIXTURES / "tiny.fasta"),
+        "--train_sequences", str(FIXTURES / "tiny.fasta"),
+        "--annot_file", str(FIXTURES / "tiny.gaf"),
+        "--graph", str(FIXTURES / "tiny.obo"),
+        "--output_file", str(output),
+        "--query_embeds", str(query_embeds),
+        "--reference_embeds", str(reference_embeds),
+        "--top_k", "2",
+        "--cutoff", "2026-05-01",
+    ])
+    assert rc == 0
+    assert output.exists()
+
+
 def test_method_main_errors_when_only_one_embeds_given(tmp_path: Path) -> None:
     """Supplying only one of the two embed flags must be a clean error."""
     module = _load_method_main()
