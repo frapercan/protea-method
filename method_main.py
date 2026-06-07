@@ -44,6 +44,7 @@ from typing import Any
 
 import numpy as np
 
+from protea_method.cutoff import assert_obo_not_after_cutoff
 from protea_method.io import read_fasta, read_gaf, read_obo, write_lafa_tsv
 from protea_method.pipeline import PredictConfig, predict
 
@@ -149,6 +150,17 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Optional NUM_THREADS hint. Currently informational only; "
             "numpy and faiss-cpu read OMP_NUM_THREADS from the environment."
+        ),
+    )
+    parser.add_argument(
+        "--cutoff", default=None,
+        help=(
+            "Single training-cutoff knob (F-EVAL-PROTOCOL.c): a band name "
+            "(v226 / v227 / ...) or a YYYY-MM-DD date. When set, the --graph "
+            "ontology's data-version is validated against the cutoff t0 "
+            "(no-future-data rule) before inference, so a frozen container "
+            "cannot propagate against a future ontology. A retrained "
+            "container changes only this knob."
         ),
     )
     return parser
@@ -339,6 +351,15 @@ def _resolve_embeddings(
 
 def _run(args: argparse.Namespace) -> int:
     """Top-level orchestration. Returns the process exit code."""
+    if args.cutoff:
+        # No-future-data gate: refuse a GO ontology dated after the cutoff
+        # BEFORE the heavy GAF / embedding / KNN work runs (fail fast). This
+        # mirrors the export-side guard in PROTEA's band_registry, kept
+        # self-contained so the slim container has no protea-core dependency.
+        assert_obo_not_after_cutoff(args.graph, args.cutoff)
+        sys.stderr.write(
+            f"[lafa] cutoff guard OK: --graph <= cutoff {args.cutoff!r}\n"
+        )
     sys.stderr.write(f"[lafa] loading FASTA: {args.query_file}\n")
     queries = read_fasta(args.query_file)
     sys.stderr.write(f"[lafa] loading FASTA: {args.train_sequences}\n")
