@@ -156,7 +156,7 @@ def _compute_neighbor_centroids(
                     (centroid / cn).astype(np.float32) if cn > 0.0 else None
                 )
                 prev = info.get((q_acc, asp))
-                if prev is None or prev == (None, None):
+                if prev is None or (prev[0] is None and prev[1] is None):
                     info[(q_acc, asp)] = (centroid_unit, nmat)
     return info
 
