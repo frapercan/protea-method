@@ -13,7 +13,7 @@ enrichment (alignment, taxonomy, Anc2Vec, lineage), and LightGBM re-ranker-apply
 on FastAPI, SQLAlchemy, or protea-core. No Postgres, no RabbitMQ, no workers
 required for standalone use.
 
-**Status:** v0.3.0, production. Inference path is live: the Docker image is
+**Status:** v0.3.1, production. Inference path is live: the Docker image is
 published to DockerHub and has been submitted to FunctionBench. SemVer
 coordinated with `protea-contracts`; breaking changes to the feature schema
 require a major bump.
@@ -192,18 +192,20 @@ no CI job performs it.
 
 ## Documentation
 
-Full API reference is built with Sphinx autodoc. To build locally:
+Documentation is built with Sphinx. Alongside the full API autodoc reference
+it ships narrative guides: an overview, a quickstart, the LAFA inference flow
+(query to embeddings to KNN to reranker to 3-column TSV), the own-reference
+temporal-cutoff design, container usage, and a contributing guide. To build
+locally:
 
 ```bash
-pip install "protea-method[mil]" sphinx alabaster
-cd docs
-make html
+poetry install --with docs
+poetry run sphinx-build -b html -W docs/source docs/build/html
 # Open docs/build/html/index.html
 ```
 
-The docs cover `method_main`, all loaders (`io/loaders.py`, `io/lafa_tsv.py`),
-the in-container PLM embedder (`embed/`), and every public module in
-`protea_method`.
+The CI `docs` workflow builds with `-W` (warnings treated as errors), so a
+broken cross-reference or a missing autodoc target fails the job.
 
 ## Versioning
 
@@ -213,6 +215,9 @@ here and forces re-training of every downstream LightGBM booster registered in
 PROTEA. PROTEA persists the `feature_schema_sha` of each trained booster and
 refuses to score with a booster whose schema digest drifts from the live
 inference pipeline.
+
+Release history is tracked in [`CHANGELOG.md`](CHANGELOG.md) (Keep a Changelog
+format).
 
 ## Test
 
