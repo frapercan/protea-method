@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "protea-method"
-version = "0.1.0"
+version = "0.3.1"
 description = "Pure inference: KNN search, feature compute, apply reranker. Standalone library; no FastAPI, no SQLAlchemy."
 authors = ["Francisco Miguel Pérez Canales <frapercan1@gmail.com>"]
 license = "MIT"
@@ -67,6 +67,13 @@ ruff = ">=0.1"
 mypy = ">=1.7"
 pandas-stubs = ">=2.0"
 
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+sphinx = ">=7"
+alabaster = ">=0.7"
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -99,6 +106,16 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["torch", "torch.*"]
 ignore_missing_imports = true
+
+# sphinx is a docs-only dependency, never a runtime import of the package.
+# When the optional `docs` group is installed into the same venv as the
+# type-checker, a transitive import would otherwise drag mypy into sphinx's
+# 3.12-only `type` statements (this project pins python_version = "3.10").
+# Skip following it so mypy is identical with or without the docs extras.
+[[tool.mypy.overrides]]
+module = ["sphinx", "sphinx.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

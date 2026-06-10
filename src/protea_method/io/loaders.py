@@ -20,7 +20,6 @@ LAFA-supplied files directly; no preprocessing step required.
 from __future__ import annotations
 
 import gzip
-import io
 from collections.abc import Iterator
 from pathlib import Path
 from typing import IO, Any
@@ -245,11 +244,6 @@ def read_obo(path: Path | str) -> dict[str, dict[str, Any]]:
                 "parents": _parents_from_stanza(stanza),
             }
     return terms
-
-
-def _ensure_text_stream(handle: Any) -> io.TextIOBase:
-    """Type-narrowing helper for the gzip / pathlib union."""
-    return handle  # type: ignore[no-any-return]
 
 
 __all__ = [

@@ -213,7 +213,7 @@ def _compute_tax_voter_counters(
                         same_d[gtid] = same_d.get(gtid, 0) + 1
                     if is_close:
                         close_d[gtid] = close_d.get(gtid, 0) + 1
-                    if isinstance(ca, int | float) and ca is not None:
+                    if isinstance(ca, int | float):
                         sum_d[gtid] = sum_d.get(gtid, 0.0) + float(ca)
                         n_d[gtid] = n_d.get(gtid, 0) + 1
     return same_cnt, close_cnt, ca_sum, ca_n, vc_div

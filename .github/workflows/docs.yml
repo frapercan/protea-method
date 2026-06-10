@@ -1,0 +1,29 @@
+name: docs
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install poetry
+        run: pipx install poetry
+      - name: Install dependencies (docs + package)
+        run: poetry install --with docs
+      - name: Sphinx build (warnings as errors)
+        run: poetry run sphinx-build -b html -W --keep-going docs/source docs/build/html
+      - name: Upload built docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: html-docs
+          path: docs/build/html

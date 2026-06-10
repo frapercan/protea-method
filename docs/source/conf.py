@@ -32,9 +32,9 @@ _backends_stub = types.ModuleType("protea_backends")
 sys.modules["protea_backends"] = _backends_stub
 
 project = "protea-method"
-copyright = "2025, Francisco Miguel Perez Canales"
+copyright = "2025-2026, Francisco Miguel Perez Canales"
 author = "Francisco Miguel Perez Canales"
-release = "0.3.0"
+release = "0.3.1"
 
 extensions = [
     "sphinx.ext.autodoc",
