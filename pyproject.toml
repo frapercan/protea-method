@@ -67,6 +67,13 @@ ruff = ">=0.1"
 mypy = ">=1.7"
 pandas-stubs = ">=2.0"
 
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+sphinx = ">=7"
+alabaster = ">=0.7"
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
