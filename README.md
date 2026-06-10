@@ -5,7 +5,7 @@
 [![CI](https://github.com/frapercan/protea-method/actions/workflows/ci.yml/badge.svg)](https://github.com/frapercan/protea-method/actions/workflows/ci.yml)
 [![Documentation](https://img.shields.io/readthedocs/protea-method.svg)](https://protea-method.readthedocs.io)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: Unlicense](https://img.shields.io/badge/license-Unlicense-blue.svg)](https://unlicense.org/)
 [![PyPI](https://img.shields.io/pypi/v/protea-method.svg)](https://pypi.org/project/protea-method/)
 
 `protea-method` is the pure inference path of the PROTEA protein-annotation
@@ -77,36 +77,68 @@ pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 ## Quickstart
 
+`predict` is keyword-only and returns a flat list of PROTEA-compatible
+prediction rows. It takes pre-computed PLM embeddings plus the reference GO
+annotations and the integer-id maps that resolve each `go_term_id` to its GO
+string and aspect (`F`, `P`, `C`).
+
 ```python
 import numpy as np
 from protea_method import predict, PredictConfig
 
-# Float16 or float32 numpy arrays, shape [N, D]
+# Pre-computed PLM embeddings, shape [N, D], float16 or float32
 query_embeddings = np.load("query_embeddings.npy")
-ref_embeddings   = np.load("ref_embeddings.npy")
+reference_embeddings = np.load("reference_embeddings.npy")
 
-# GO annotations per reference sequence (list of lists of GO term strings)
-ref_annotations = [["GO:0008150", "GO:0003674"], ...]
+query_accessions = ["Q1", "Q2"]
+reference_accessions = ["R1", "R2", "R3"]
 
-# GO parent map loaded from a parquet or JSON export
-parent_map = {}  # {go_id: [parent_go_id, ...]}
+# GO annotations per reference accession (go_term_id is an integer key)
+annotations = {
+    "R1": [{"go_term_id": 8150}, {"go_term_id": 3674}],
+    "R2": [{"go_term_id": 8150}],
+    "R3": [{"go_term_id": 5575}],
+}
 
-cfg = PredictConfig(k=15)
-predictions = predict(query_embeddings, ref_embeddings, ref_annotations, parent_map, cfg)
-# predictions: list of dicts {"go_id": str, "score": float, "aspect": str}
+# Integer-id maps: go_term_id -> GO string and aspect (F, P, C)
+go_id_map = {8150: "GO:0008150", 3674: "GO:0003674", 5575: "GO:0005575"}
+go_aspect_map = {8150: "P", 3674: "F", 5575: "C"}
+
+predictions = predict(
+    query_accessions=query_accessions,
+    query_embeddings=query_embeddings,
+    reference_accessions=reference_accessions,
+    reference_embeddings=reference_embeddings,
+    annotations=annotations,
+    go_id_map=go_id_map,
+    go_aspect_map=go_aspect_map,
+    config=PredictConfig(k=15),
+)
+# Each row carries protein_accession, go_id, aspect, vote_count, distances,
+# and reranker_score when a booster is supplied.
 ```
 
-When a PROTEA-trained LightGBM booster is available, predictions are
-automatically re-ranked:
+When a PROTEA-trained LightGBM booster is available, pass it to `predict`
+(directly or per-aspect via `boosters_by_aspect`) and each row gains a
+`reranker_score`:
 
 ```python
-from protea_method.reranker import load_from_bytes
+from protea_method import load_from_bytes
 
 with open("booster.txt", "rb") as fh:
     booster = load_from_bytes(fh.read())
 
-cfg = PredictConfig(k=15, booster=booster)
-predictions = predict(query_embeddings, ref_embeddings, ref_annotations, parent_map, cfg)
+predictions = predict(
+    query_accessions=query_accessions,
+    query_embeddings=query_embeddings,
+    reference_accessions=reference_accessions,
+    reference_embeddings=reference_embeddings,
+    annotations=annotations,
+    go_id_map=go_id_map,
+    go_aspect_map=go_aspect_map,
+    config=PredictConfig(k=15),
+    booster=booster,
+)
 ```
 
 ## Modules at a glance
@@ -271,4 +303,5 @@ Key constraints:
 
 ## License
 
-MIT. See `LICENSE`.
+Released into the public domain under [The Unlicense](https://unlicense.org/).
+See [`LICENSE`](LICENSE).
