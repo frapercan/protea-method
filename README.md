@@ -201,10 +201,10 @@ no CI job performs it.
 Hosted documentation: [https://protea-method.readthedocs.io](https://protea-method.readthedocs.io)
 
 Documentation is built with Sphinx. Alongside the full API autodoc reference
-it ships narrative guides: an overview, a quickstart, the LAFA inference flow
-(query to embeddings to KNN to reranker to 3-column TSV), the own-reference
-temporal-cutoff design, container usage, and a contributing guide. To build
-locally:
+it ships a narrative spine: an overview that covers the abstractions, the
+end-to-end inference flow (query to embeddings to KNN to reranker to 3-column
+TSV), and the own-reference temporal-cutoff design; a quickstart; a
+container-usage guide; and a contributing guide. To build locally:
 
 ```bash
 poetry install --with docs

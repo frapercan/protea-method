@@ -101,7 +101,8 @@ Temporal cutoff
 ---------------
 
 Pass ``--cutoff`` (a band name or a ``YYYY-MM-DD`` date) to enable the
-no-future-data guard described in :doc:`own_reference_cutoff`. The
+no-future-data guard described in the
+:ref:`own-reference cutoff section <own-reference>` of the overview. The
 container then refuses a ``--graph`` ontology dated after the cutoff
 before any heavy work runs.
 

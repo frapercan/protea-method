@@ -106,6 +106,7 @@ expects (gzipped automatically when the path ends in ``.gz``):
 Next steps
 ----------
 
-* :doc:`inference_flow` traces the full path end to end.
+* :doc:`overview` traces the full path end to end and explains the
+  own-reference cutoff design.
 * :doc:`container_usage` shows how to run the same logic as a Docker
   container.
