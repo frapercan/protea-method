@@ -57,6 +57,21 @@ def fit_embedding_pca(
     return mean.astype(np.float32), components
 
 
+def _calibrate_scores(raw: np.ndarray) -> np.ndarray:
+    """Map raw booster output into the [0, 1] range the CAFA evaluator expects.
+
+    Binary boosters already emit probabilities and are returned
+    unchanged. Lambdarank boosters emit unbounded reals; when any value
+    falls outside [0, 1] a sigmoid is applied to calibrate the whole
+    array. Empty arrays pass through untouched.
+    """
+    if raw.size == 0:
+        return raw
+    if float(raw.min()) < 0.0 or float(raw.max()) > 1.0:
+        return np.asarray(1.0 / (1.0 + np.exp(-raw)))
+    return raw
+
+
 def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     """Extract feature matrix and label vector from a training DataFrame.
 
@@ -129,11 +144,7 @@ def predict(
                     X[col] = codes
 
     raw = np.asarray(model.predict(X))
-    if raw.size == 0:
-        return raw
-    if float(raw.min()) < 0.0 or float(raw.max()) > 1.0:
-        return np.asarray(1.0 / (1.0 + np.exp(-raw)))
-    return raw
+    return _calibrate_scores(raw)
 
 
 def model_from_string(model_str: str) -> lgb.Booster:
@@ -175,11 +186,7 @@ def apply_reranker(
         if not isinstance(X[col].dtype, pd.CategoricalDtype):
             X[col] = pd.to_numeric(X[col], errors="coerce")
     raw = np.asarray(booster.predict(X))
-    if raw.size == 0:
-        return raw
-    if float(raw.min()) < 0.0 or float(raw.max()) > 1.0:
-        return np.asarray(1.0 / (1.0 + np.exp(-raw)))
-    return raw
+    return _calibrate_scores(raw)
 
 
 def infer_active_feature_families(
