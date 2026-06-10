@@ -2,6 +2,12 @@
 
 **LAFA submission layer that wraps the PROTEA pipeline for FunctionBench.**
 
+[![CI](https://github.com/frapercan/protea-method/actions/workflows/ci.yml/badge.svg)](https://github.com/frapercan/protea-method/actions/workflows/ci.yml)
+[![Docs](https://github.com/frapercan/protea-method/actions/workflows/docs.yml/badge.svg)](https://github.com/frapercan/protea-method/actions/workflows/docs.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![PyPI](https://img.shields.io/pypi/v/protea-method.svg)](https://pypi.org/project/protea-method/)
+
 `protea-method` is the pure inference path of the PROTEA protein-annotation
 stack, packaged as a slim standalone library. It implements the standard LAFA
 container interface so that the same code that powers the PROTEA platform
@@ -191,6 +197,8 @@ The DockerHub push is intentionally manual (the runbook is operator-driven);
 no CI job performs it.
 
 ## Documentation
+
+Hosted documentation: [https://frapercan.github.io/protea-method/](https://frapercan.github.io/protea-method/)
 
 Documentation is built with Sphinx. Alongside the full API autodoc reference
 it ships narrative guides: an overview, a quickstart, the LAFA inference flow
