@@ -6,7 +6,7 @@ build-backend = "poetry.core.masonry.api"
 name = "protea-method"
 version = "0.3.1"
 description = "Pure inference: KNN search, feature compute, apply reranker. Standalone library; no FastAPI, no SQLAlchemy."
-authors = ["Francisco Miguel Pérez Canales <frapercan1@gmail.com>"]
+authors = ["Francisco Miguel Pérez Canales <frapercan1@alum.us.es>"]
 license = "Unlicense"
 readme = "README.md"
 packages = [{ include = "protea_method", from = "src" }]
