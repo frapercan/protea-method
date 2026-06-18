@@ -113,40 +113,37 @@ def test_compute_neighbor_centroids_no_valueerror_when_prev_has_ndarrays(
         {1, 2, 3}, go_id_map, anc_idx=anc_idx,
     )
 
-    # First call seeds (Q1, F) with real ndarrays.
+    # A single call whose neighbors_by_aspect has TWO outer keys both feeding
+    # F-aspect candidate terms forces the inner loop to write (Q1, F) on the
+    # first outer iteration (real ndarrays) and then REVISIT the very same key
+    # on the second iteration, so ``prev`` holds (ndarray, ndarray).  This is
+    # the exact code path that the old ``prev == (None, None)`` guard crashed
+    # on with ValueError; the identity guard must sail through it.
     info = _compute_neighbor_centroids(
         valid_accessions=["Q1"],
-        neighbors_by_aspect={"F": [[("R1", 0.9)]]},
-        go_map_by_aspect={"F": {"R1": [{"go_term_id": 1}]}},
+        neighbors_by_aspect={
+            "F": [[("R1", 0.9)]],
+            "C": [[("R2", 0.5)]],
+        },
+        go_map_by_aspect={
+            "F": {"R1": [{"go_term_id": 1}]},
+            "C": {"R2": [{"go_term_id": 2}, {"go_term_id": 3}]},
+        },
         go_id_map=go_id_map,
         go_aspect_map=go_aspect_map,
         idx_of_go=idx_of_go,
         all_norm=all_norm,
         has_emb_mask=mask,
     )
+    # Did not raise.  The stored centroid must be the FIRST real one (from the
+    # "F" outer iteration via R1 -> GO:0000001), never clobbered by the revisit.
     centroid_first, nmat_first = info[("Q1", "F")]
     assert centroid_first is not None
     assert isinstance(nmat_first, np.ndarray)
-
-    # A second call with a different neighbor set shares the same (q_acc, aspect)
-    # key.  Must not raise regardless of what is already in the dict.
-    second_info = _compute_neighbor_centroids(
-        valid_accessions=["Q1"],
-        neighbors_by_aspect={"F": [[("R2", 0.5)]]},
-        go_map_by_aspect={"F": {"R2": [{"go_term_id": 2}, {"go_term_id": 3}]}},
-        go_id_map=go_id_map,
-        go_aspect_map=go_aspect_map,
-        idx_of_go=idx_of_go,
-        all_norm=all_norm,
-        has_emb_mask=mask,
-    )
-    # The function itself must not raise even when called with a fresh dict
-    # (the key is written fresh here); the important regression check is that
-    # iterating with an existing ndarray-valued prev in `info` does not raise.
-    assert ("Q1", "F") in second_info
-    c2, n2 = second_info[("Q1", "F")]
-    assert isinstance(c2, np.ndarray)
-    assert isinstance(n2, np.ndarray)
+    # R1 contributes exactly one F-aspect term -> nmat has a single row.  The
+    # revisit (R2 -> two terms) would have produced a 2-row nmat had it
+    # clobbered, so this row count pins down that the first centroid stuck.
+    assert nmat_first.shape[0] == 1
 
     # Direct regression probe: manually reproduce the internal guard logic to
     # verify that a (ndarray, ndarray) prev does NOT accidentally satisfy the
