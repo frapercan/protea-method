@@ -112,13 +112,10 @@ def search_knn(
     distance_threshold:
         If set, discard neighbours with distance > threshold.
     backend:
-        ``"numpy"`` (exact brute-force), ``"faiss"``, ``"torch"``
-        (chunked GPU/CPU KNN via ``torch.cdist + topk``; recommended for
-        production runs where torch is installed), or ``"sparse"``
+        ``"numpy"`` (exact brute-force), ``"faiss"``, ``"torch"`` (chunked
+        GPU/CPU KNN via ``torch.cdist + topk``; ``PROTEA_KNN_DEVICE`` default
+        ``"auto"``, ``PROTEA_KNN_CHUNK_SIZE`` default 4096), or ``"sparse"``
         (inverted-index cosine over learned k-WTA codes; cosine only).
-        Device selection for the torch backend is controlled by
-        ``PROTEA_KNN_DEVICE`` (default ``"auto"``); query chunk size by
-        ``PROTEA_KNN_CHUNK_SIZE`` (default 4096).
     metric:
         ``"cosine"`` or ``"l2"``.
     pre_normalized:
@@ -144,50 +141,33 @@ def search_knn(
     """
     if backend == "faiss":
         return _search_faiss(
-            query_embeddings,
-            ref_embeddings,
-            ref_accessions,
-            k,
-            distance_threshold=distance_threshold,
-            metric=metric,
-            index_type=faiss_index_type,
-            nlist=faiss_nlist,
-            nprobe=faiss_nprobe,
-            hnsw_m=faiss_hnsw_m,
-            hnsw_ef_search=faiss_hnsw_ef_search,
+            query_embeddings, ref_embeddings, ref_accessions, k,
+            distance_threshold=distance_threshold, metric=metric,
+            index_type=faiss_index_type, nlist=faiss_nlist, nprobe=faiss_nprobe,
+            hnsw_m=faiss_hnsw_m, hnsw_ef_search=faiss_hnsw_ef_search,
         )
     if backend == "numpy":
         return _search_numpy(
-            query_embeddings,
-            ref_embeddings,
-            ref_accessions,
-            k,
-            distance_threshold=distance_threshold,
-            metric=metric,
-            pre_normalized=pre_normalized,
+            query_embeddings, ref_embeddings, ref_accessions, k,
+            distance_threshold=distance_threshold, metric=metric, pre_normalized=pre_normalized,
         )
     if backend == "torch":
         return _search_torch(
-            query_embeddings,
-            ref_embeddings,
-            ref_accessions,
-            k,
-            distance_threshold=distance_threshold,
-            metric=metric,
+            query_embeddings, ref_embeddings, ref_accessions, k,
+            distance_threshold=distance_threshold, metric=metric,
         )
     if backend == "sparse":
+        if metric != "cosine":
+            raise ValueError(
+                f"Sparse backend supports only metric='cosine', got {metric!r}. "
+                f"k-WTA codes are scored by sparse cosine overlap."
+            )
         return _search_sparse(
-            query_embeddings,
-            ref_embeddings,
-            ref_accessions,
-            k,
-            distance_threshold=distance_threshold,
-            metric=metric,
-            pre_normalized=pre_normalized,
+            query_embeddings, ref_embeddings, ref_accessions, k,
+            distance_threshold=distance_threshold, pre_normalized=pre_normalized,
         )
     raise ValueError(
-        f"Unknown search backend: {backend!r}. "
-        f"Choose 'numpy', 'faiss', 'torch', or 'sparse'."
+        f"Unknown search backend: {backend!r}. Choose 'numpy', 'faiss', 'torch', or 'sparse'."
     )
 
 
@@ -536,6 +516,59 @@ def _build_inverted_index(R: np.ndarray) -> _InvertedIndex:
     return _InvertedIndex(rows_sorted, vals_sorted, indptr, R.shape[0])
 
 
+def _sparse_query_scores(
+    q: np.ndarray, index: _InvertedIndex, n_refs: int
+) -> np.ndarray:
+    """Accumulate sparse-cosine similarity of one query against all refs.
+
+    Gathers the postings (ref rows + values) of every active query dimension
+    in one fancy-index, weights each posting by the query value of its
+    dimension, then scatter-adds into an ``n_refs`` score buffer with a
+    single C-level ``np.bincount`` (no per-dimension Python loop). Only the
+    references that co-activate at least one of the query's active dimensions
+    are visited.
+    """
+    active_dims = np.nonzero(q)[0]
+    starts = index.indptr[active_dims]
+    ends = index.indptr[active_dims + 1]
+    counts = ends - starts
+    total = int(counts.sum())
+    if total == 0:
+        return np.zeros(n_refs, dtype=np.float32)
+    seg = _concat_ranges(starts, ends, total)
+    # Per-posting weight = ref value * the query's value in that dim.
+    contrib = index.vals[seg] * np.repeat(q[active_dims], counts)
+    return np.bincount(
+        index.rows[seg], weights=contrib, minlength=n_refs
+    ).astype(np.float32, copy=False)
+
+
+def _topk_hits(
+    scores: np.ndarray,
+    ref_accessions: list[str],
+    k_eff: int,
+    distance_threshold: float | None,
+) -> list[tuple[str, float]]:
+    """Select the ``k_eff`` smallest cosine distances (largest similarities).
+
+    Cosine distance = 1 - similarity. Uses argpartition on the negated scores
+    when ``k_eff`` is below ``n_refs``; a stable argsort breaks ties.
+    """
+    n_refs = scores.shape[0]
+    if k_eff < n_refs:
+        part = np.argpartition(-scores, k_eff - 1)[:k_eff]
+        top = part[np.argsort(-scores[part], kind="stable")]
+    else:
+        top = np.argsort(-scores, kind="stable")[:k_eff]
+    hits: list[tuple[str, float]] = []
+    for idx in top:
+        dist = float(1.0 - scores[idx])
+        if distance_threshold is not None and dist > distance_threshold:
+            break
+        hits.append((ref_accessions[int(idx)], dist))
+    return hits
+
+
 def _search_sparse(
     Q: np.ndarray,
     R: np.ndarray,
@@ -543,120 +576,38 @@ def _search_sparse(
     k: int,
     *,
     distance_threshold: float | None,
-    metric: str,
     pre_normalized: bool = False,
 ) -> list[list[tuple[str, float]]]:
     """Inverted-index cosine over sparse learned k-WTA codes.
 
     Each row of ``Q`` and ``R`` is a k-WTA code: only its top-``active_k``
-    dimensions are non-zero (e.g. 128 of 2048). Cosine similarity between
-    two unit-normalised codes is their dot product, and the dot product of
-    two sparse vectors only touches the dimensions they share. This backend
-    exploits that:
+    dimensions are non-zero (e.g. 128 of 2048). Cosine similarity between two
+    unit-normalised codes is their dot product, which only touches the
+    dimensions they share. Rows are L2-normalised once (skipped when
+    ``pre_normalized``) so the numerator equals the raw dot product; a flat
+    CSR-style inverted index (``_build_inverted_index``) maps each active
+    reference dimension to its postings; per query the score accumulation
+    (``_sparse_query_scores``) and top-k selection (``_topk_hits``) visit
+    only the co-activating references.
 
-    1. Rows are L2-normalised once (skipped when ``pre_normalized``), so the
-       cosine numerator equals the raw dot product.
-    2. A flat CSR-style inverted index maps each active reference dimension
-       to the reference rows (and values) that fire in it
-       (``_build_inverted_index``).
-    3. For each query, the postings of all its active dimensions are gathered
-       in one fancy-index and scattered into a ``n_refs`` score buffer with a
-       single C-level ``np.bincount`` (no per-dimension Python loop), so the
-       score accumulation visits only the co-activating references.
-
-    Complexity
-    ----------
-    Let ``a`` be the average active dims per vector (a << dim). Index build
-    is O(nnz(R)) = O(n_refs * a). A query touches
-    ``sum over its active dims of |postings(d)|`` reference entries, which
-    for uniformly distributed codes is ~``a * (n_refs * a / dim)`` =
-    ``n_refs * a^2 / dim`` multiply-adds, versus the dense backend's
-    ``n_refs * dim`` per query. For ``a = 128``, ``dim = 2048`` that is a
-    ~16x reduction in FLOPs, and the saving grows as ``dim`` grows relative
-    to ``a``.
-
-    Wall-clock caveat
-    -----------------
-    The FLOP reduction does **not** translate into a wall-clock speedup at
-    the current learned-encoder operating point (``dict = 2048``, active
-    ``k = 128..256``, i.e. 6-12% density). At that density the dense backend
-    is a single highly-tuned BLAS ``gemm`` and beats this inverted-index
-    path in measured time; the per-query gather/scatter overhead and the
-    bincount over an ``n_refs`` buffer dominate. The crossover where a pure
-    NumPy sparse cosine overtakes BLAS sits at far lower density (well below
-    ~1%). This backend is therefore valuable for its **exactness** and its
-    **memory footprint** (it stores only nnz, not the dense ``n_refs * dim``
-    bank), not as a drop-in latency win at 6-12% density. Prefer the dense
-    ``numpy``/``faiss`` backends for raw throughput on today's codes;
-    revisit this path if the encoder moves to a much sparser regime.
-
-    The result is the **exact** sparse cosine (no approximation), so the
-    top-``k`` ranking matches a dense cosine over the same codes up to
-    tie-breaking among equal distances.
-
-    Only the ``cosine`` metric is supported; k-WTA codes are designed for
-    overlap-based similarity and ``l2`` over sparse codes is not meaningful
-    here.
+    The metric is validated by the caller (``search_knn``); only ``cosine``
+    is supported. The result is the **exact** sparse cosine, so the top-``k``
+    ranking matches a dense cosine over the same codes up to tie-breaking
+    among equal distances. The value of this backend is exactness and a
+    memory footprint of only nnz (not the dense ``n_refs * dim`` bank); at
+    the current 6-12% density a single BLAS ``gemm`` still wins wall-clock,
+    so prefer the dense ``numpy``/``faiss`` backends for raw throughput.
     """
-    if metric != "cosine":
-        raise ValueError(
-            f"Sparse backend supports only metric='cosine', got {metric!r}. "
-            f"k-WTA codes are scored by sparse cosine overlap."
-        )
-
     R_ready = R if pre_normalized else _l2_normalize_rows(R)
     Q_ready = _l2_normalize_rows(Q)
-
     n_refs = R_ready.shape[0]
     k_eff = min(k, n_refs)
     index = _build_inverted_index(R_ready)
-    idx_rows, idx_vals, indptr = index.rows, index.vals, index.indptr
 
     results: list[list[tuple[str, float]]] = []
     for q_row in range(Q_ready.shape[0]):
-        q = Q_ready[q_row]
-        active_dims = np.nonzero(q)[0]
-        # Gather the postings (ref rows + values) of every active query
-        # dimension in one shot, weight each posting by the query value of
-        # its dimension, then scatter-add into the score buffer. This visits
-        # only the references that co-activate at least one of the query's
-        # active dimensions, with no per-dimension Python loop.
-        starts = indptr[active_dims]
-        ends = indptr[active_dims + 1]
-        counts = ends - starts
-        total = int(counts.sum())
-        if total > 0:
-            # Build the flat slice of posting positions for all active dims.
-            seg = _concat_ranges(starts, ends, total)
-            contrib_rows = idx_rows[seg]
-            # Per-posting weight = ref value * the query's value in that dim.
-            q_weight = np.repeat(q[active_dims], counts)
-            contrib = idx_vals[seg] * q_weight
-            # bincount is a C-level scatter-add; measurably faster than the
-            # equivalent np.add.at for these posting volumes.
-            scores = np.bincount(
-                contrib_rows, weights=contrib, minlength=n_refs,
-            ).astype(np.float32, copy=False)
-        else:
-            scores = np.zeros(n_refs, dtype=np.float32)
-
-        # Cosine distance = 1 - similarity. Select the smallest-distance
-        # (largest-similarity) k via argpartition on the negated scores.
-        if k_eff < n_refs:
-            part = np.argpartition(-scores, k_eff - 1)[:k_eff]
-            part = part[np.argsort(-scores[part], kind="stable")]
-            top = part
-        else:
-            top = np.argsort(-scores, kind="stable")[:k_eff]
-
-        hits: list[tuple[str, float]] = []
-        for idx in top:
-            dist = float(1.0 - scores[idx])
-            if distance_threshold is not None and dist > distance_threshold:
-                break
-            hits.append((ref_accessions[int(idx)], dist))
-        results.append(hits)
-
+        scores = _sparse_query_scores(Q_ready[q_row], index, n_refs)
+        results.append(_topk_hits(scores, ref_accessions, k_eff, distance_threshold))
     return results
 
 
