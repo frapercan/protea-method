@@ -19,6 +19,19 @@ torch
     This is the recommended backend for production runs on large corpora
     where torch is already installed (e.g., LAFA embedding pipeline).
 
+sparse
+    Inverted-index cosine over learned k-WTA codes. Each code vector is
+    sparse (only its top-k dimensions are non-zero, e.g. 128 active of
+    2048), so the cosine numerator only needs the dimensions a query and
+    a reference share. The backend builds an inverted index over active
+    reference dimensions and accumulates dot products by visiting, per
+    query, only the references that co-activate at least one of the
+    query's active dimensions. Pure NumPy (no scipy / FAISS / torch
+    dependency); see ``_search_sparse`` for the complexity analysis.
+    Only the ``cosine`` metric is supported for the learned k-WTA codes;
+    ``l2`` is rejected. Returns the identical ``(accession, distance)``
+    contract as the dense backends with ``distance = 1 - cosine_similarity``.
+
 Metric convention
 -----------------
 All backends return **distances** (lower = more similar):
@@ -99,12 +112,13 @@ def search_knn(
     distance_threshold:
         If set, discard neighbours with distance > threshold.
     backend:
-        ``"numpy"`` (exact brute-force), ``"faiss"``, or ``"torch"``
+        ``"numpy"`` (exact brute-force), ``"faiss"``, ``"torch"``
         (chunked GPU/CPU KNN via ``torch.cdist + topk``; recommended for
-        production runs where torch is installed). Device selection for
-        the torch backend is controlled by ``PROTEA_KNN_DEVICE`` (default
-        ``"auto"``); query chunk size by ``PROTEA_KNN_CHUNK_SIZE`` (default
-        4096).
+        production runs where torch is installed), or ``"sparse"``
+        (inverted-index cosine over learned k-WTA codes; cosine only).
+        Device selection for the torch backend is controlled by
+        ``PROTEA_KNN_DEVICE`` (default ``"auto"``); query chunk size by
+        ``PROTEA_KNN_CHUNK_SIZE`` (default 4096).
     metric:
         ``"cosine"`` or ``"l2"``.
     pre_normalized:
@@ -161,7 +175,20 @@ def search_knn(
             distance_threshold=distance_threshold,
             metric=metric,
         )
-    raise ValueError(f"Unknown search backend: {backend!r}. Choose 'numpy', 'faiss', or 'torch'.")
+    if backend == "sparse":
+        return _search_sparse(
+            query_embeddings,
+            ref_embeddings,
+            ref_accessions,
+            k,
+            distance_threshold=distance_threshold,
+            metric=metric,
+            pre_normalized=pre_normalized,
+        )
+    raise ValueError(
+        f"Unknown search backend: {backend!r}. "
+        f"Choose 'numpy', 'faiss', 'torch', or 'sparse'."
+    )
 
 
 def _search_numpy(
@@ -409,6 +436,226 @@ def _search_torch(
                         break
                     hits.append((ref_accessions[int(top_idx_cpu[row_i, col_i])], dist_val))
                 results.append(hits)
+
+    return results
+
+
+def _l2_normalize_rows(M: np.ndarray) -> np.ndarray:
+    """Return ``M`` with each row scaled to unit L2 norm (zero rows stay zero)."""
+    norms = np.linalg.norm(M, axis=1, keepdims=True)
+    return np.asarray(M / (norms + 1e-9), dtype=np.float32)
+
+
+class _InvertedIndex:
+    """Flat CSR-style inverted index over the active dimensions of a code bank.
+
+    For each feature dimension ``d`` the references that fire in ``d`` (and
+    their values) live in a contiguous slice
+    ``rows[indptr[d] : indptr[d + 1]]`` of the flat ``rows`` / ``vals``
+    arrays. Storing the postings flat (rather than one array per dimension)
+    lets a query gather the postings of all its active dimensions in a
+    single fancy-index + ``np.add.at`` scatter, with no per-dimension Python
+    loop.
+
+    Attributes
+    ----------
+    rows:
+        Flat int64 array of reference row indices, grouped by dimension.
+    vals:
+        Flat float32 array of the matching reference values.
+    indptr:
+        Length ``dim + 1`` int64 array of slice boundaries per dimension.
+    n_refs:
+        Number of reference rows the index was built over.
+    """
+
+    __slots__ = ("indptr", "n_refs", "rows", "vals")
+
+    def __init__(
+        self,
+        rows: np.ndarray,
+        vals: np.ndarray,
+        indptr: np.ndarray,
+        n_refs: int,
+    ) -> None:
+        self.rows = rows
+        self.vals = vals
+        self.indptr = indptr
+        self.n_refs = n_refs
+
+
+def _concat_ranges(starts: np.ndarray, ends: np.ndarray, total: int) -> np.ndarray:
+    """Vectorised concatenation of the integer ranges ``[starts[i], ends[i])``.
+
+    Equivalent to ``np.concatenate([np.arange(s, e) for s, e in zip(starts, ends)])``
+    but without the Python loop. Used to gather the flat posting positions of
+    a query's active dimensions in one fancy-index.
+
+    Builds the output as all-ones, then at the first position of each segment
+    overwrites the value with the jump from the previous segment's last index
+    to this segment's start, so a single cumulative sum lands on every range
+    element. Empty segments contribute nothing and are skipped.
+    """
+    counts = ends - starts
+    out = np.ones(total, dtype=np.int64)
+    # Output offset where each segment begins; drop empty segments so the
+    # reset is written at a real (non-duplicated) position.
+    seg_offsets = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    nonempty = counts > 0
+    seg_offsets_ne = seg_offsets[nonempty]
+    starts_ne = starts[nonempty]
+    # First non-empty segment starts at its own start; each later non-empty
+    # segment jumps from the running value (its predecessor's last index) to
+    # its start. The running value just before offset o equals the previous
+    # non-empty segment's last index, so the stored delta is start - prev_last.
+    resets = np.empty(starts_ne.shape[0], dtype=np.int64)
+    resets[0] = starts_ne[0]
+    prev_last = (ends[nonempty] - 1)[:-1]
+    resets[1:] = starts_ne[1:] - prev_last
+    out[seg_offsets_ne] = resets
+    return np.asarray(np.cumsum(out), dtype=np.int64)
+
+
+def _build_inverted_index(R: np.ndarray) -> _InvertedIndex:
+    """Build a flat CSR-style inverted index over the active dims of ``R``.
+
+    Iterates the non-zero structure once (O(nnz(R)); for k-WTA codes
+    nnz(R) = ``n_refs * active_k``, far below the dense ``n_refs * dim``)
+    and groups it by feature dimension.
+    """
+    dim = R.shape[1]
+    nz_rows, nz_cols = np.nonzero(R)
+    nz_vals = R[nz_rows, nz_cols].astype(np.float32, copy=False)
+    # Group by column: a stable argsort on the column index gives contiguous
+    # per-dimension runs; np.searchsorted then records each run boundary.
+    order = np.argsort(nz_cols, kind="stable")
+    cols_sorted = nz_cols[order]
+    rows_sorted = nz_rows[order].astype(np.int64, copy=False)
+    vals_sorted = nz_vals[order]
+    indptr = np.searchsorted(cols_sorted, np.arange(dim + 1)).astype(np.int64, copy=False)
+    return _InvertedIndex(rows_sorted, vals_sorted, indptr, R.shape[0])
+
+
+def _search_sparse(
+    Q: np.ndarray,
+    R: np.ndarray,
+    ref_accessions: list[str],
+    k: int,
+    *,
+    distance_threshold: float | None,
+    metric: str,
+    pre_normalized: bool = False,
+) -> list[list[tuple[str, float]]]:
+    """Inverted-index cosine over sparse learned k-WTA codes.
+
+    Each row of ``Q`` and ``R`` is a k-WTA code: only its top-``active_k``
+    dimensions are non-zero (e.g. 128 of 2048). Cosine similarity between
+    two unit-normalised codes is their dot product, and the dot product of
+    two sparse vectors only touches the dimensions they share. This backend
+    exploits that:
+
+    1. Rows are L2-normalised once (skipped when ``pre_normalized``), so the
+       cosine numerator equals the raw dot product.
+    2. A flat CSR-style inverted index maps each active reference dimension
+       to the reference rows (and values) that fire in it
+       (``_build_inverted_index``).
+    3. For each query, the postings of all its active dimensions are gathered
+       in one fancy-index and scattered into a ``n_refs`` score buffer with a
+       single C-level ``np.bincount`` (no per-dimension Python loop), so the
+       score accumulation visits only the co-activating references.
+
+    Complexity
+    ----------
+    Let ``a`` be the average active dims per vector (a << dim). Index build
+    is O(nnz(R)) = O(n_refs * a). A query touches
+    ``sum over its active dims of |postings(d)|`` reference entries, which
+    for uniformly distributed codes is ~``a * (n_refs * a / dim)`` =
+    ``n_refs * a^2 / dim`` multiply-adds, versus the dense backend's
+    ``n_refs * dim`` per query. For ``a = 128``, ``dim = 2048`` that is a
+    ~16x reduction in FLOPs, and the saving grows as ``dim`` grows relative
+    to ``a``.
+
+    Wall-clock caveat
+    -----------------
+    The FLOP reduction does **not** translate into a wall-clock speedup at
+    the current learned-encoder operating point (``dict = 2048``, active
+    ``k = 128..256``, i.e. 6-12% density). At that density the dense backend
+    is a single highly-tuned BLAS ``gemm`` and beats this inverted-index
+    path in measured time; the per-query gather/scatter overhead and the
+    bincount over an ``n_refs`` buffer dominate. The crossover where a pure
+    NumPy sparse cosine overtakes BLAS sits at far lower density (well below
+    ~1%). This backend is therefore valuable for its **exactness** and its
+    **memory footprint** (it stores only nnz, not the dense ``n_refs * dim``
+    bank), not as a drop-in latency win at 6-12% density. Prefer the dense
+    ``numpy``/``faiss`` backends for raw throughput on today's codes;
+    revisit this path if the encoder moves to a much sparser regime.
+
+    The result is the **exact** sparse cosine (no approximation), so the
+    top-``k`` ranking matches a dense cosine over the same codes up to
+    tie-breaking among equal distances.
+
+    Only the ``cosine`` metric is supported; k-WTA codes are designed for
+    overlap-based similarity and ``l2`` over sparse codes is not meaningful
+    here.
+    """
+    if metric != "cosine":
+        raise ValueError(
+            f"Sparse backend supports only metric='cosine', got {metric!r}. "
+            f"k-WTA codes are scored by sparse cosine overlap."
+        )
+
+    R_ready = R if pre_normalized else _l2_normalize_rows(R)
+    Q_ready = _l2_normalize_rows(Q)
+
+    n_refs = R_ready.shape[0]
+    k_eff = min(k, n_refs)
+    index = _build_inverted_index(R_ready)
+    idx_rows, idx_vals, indptr = index.rows, index.vals, index.indptr
+
+    results: list[list[tuple[str, float]]] = []
+    for q_row in range(Q_ready.shape[0]):
+        q = Q_ready[q_row]
+        active_dims = np.nonzero(q)[0]
+        # Gather the postings (ref rows + values) of every active query
+        # dimension in one shot, weight each posting by the query value of
+        # its dimension, then scatter-add into the score buffer. This visits
+        # only the references that co-activate at least one of the query's
+        # active dimensions, with no per-dimension Python loop.
+        starts = indptr[active_dims]
+        ends = indptr[active_dims + 1]
+        counts = ends - starts
+        total = int(counts.sum())
+        if total > 0:
+            # Build the flat slice of posting positions for all active dims.
+            seg = _concat_ranges(starts, ends, total)
+            contrib_rows = idx_rows[seg]
+            # Per-posting weight = ref value * the query's value in that dim.
+            q_weight = np.repeat(q[active_dims], counts)
+            contrib = idx_vals[seg] * q_weight
+            # bincount is a C-level scatter-add; measurably faster than the
+            # equivalent np.add.at for these posting volumes.
+            scores = np.bincount(
+                contrib_rows, weights=contrib, minlength=n_refs,
+            ).astype(np.float32, copy=False)
+        else:
+            scores = np.zeros(n_refs, dtype=np.float32)
+
+        # Cosine distance = 1 - similarity. Select the smallest-distance
+        # (largest-similarity) k via argpartition on the negated scores.
+        if k_eff < n_refs:
+            part = np.argpartition(-scores, k_eff - 1)[:k_eff]
+            part = part[np.argsort(-scores[part], kind="stable")]
+            top = part
+        else:
+            top = np.argsort(-scores, kind="stable")[:k_eff]
+
+        hits: list[tuple[str, float]] = []
+        for idx in top:
+            dist = float(1.0 - scores[idx])
+            if distance_threshold is not None and dist > distance_threshold:
+                break
+            hits.append((ref_accessions[int(idx)], dist))
+        results.append(hits)
 
     return results
 
