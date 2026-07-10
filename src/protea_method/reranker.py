@@ -24,6 +24,23 @@ from protea_contracts import (
     LABEL_COLUMN,
     NUMERIC_FEATURES,
 )
+from protea_contracts.feature_docs import FEATURE_DOCS, FeatureStatus
+
+#: Columns the contracts declare but no producer in this stack writes. The lab's
+#: pooled multi-manifest loader stamps ``plm_id`` and ``k_context`` when it
+#: combines several sources to train a universal booster; a frame built from a
+#: single manifest never carries them. Derived from the feature registry rather
+#: than restated here, so the two cannot drift.
+POOL_INJECTED_FEATURES: tuple[str, ...] = tuple(
+    name
+    for name, doc in FEATURE_DOCS.items()
+    if doc.status is FeatureStatus.POOL_INJECTED
+)
+
+#: The columns every frame must carry, whatever its provenance.
+REQUIRED_FEATURES: tuple[str, ...] = tuple(
+    f for f in ALL_FEATURES if f not in POOL_INJECTED_FEATURES
+)
 
 
 def fit_embedding_pca(
@@ -69,15 +86,23 @@ def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
 
     Returns ``(X, y)`` where X has only the feature columns and y is
     the binary label.
+
+    Pool-injected columns (:data:`POOL_INJECTED_FEATURES`) are taken when the
+    frame carries them and skipped when it does not. A single-manifest frame
+    has no ``plm_id`` or ``k_context`` to report, and inventing one would be a
+    fabricated value rather than a missing measurement (compare ADR-D45).
+    Every other declared column is required, and a frame missing one still
+    raises.
     """
-    X = df[ALL_FEATURES].copy()
+    present = [f for f in ALL_FEATURES if f in df.columns or f in REQUIRED_FEATURES]
+    X = df[present].copy()
     for col in NUMERIC_FEATURES:
         if col in X.columns:
             X[col] = pd.to_numeric(X[col], errors="coerce")
     for col in CATEGORICAL_FEATURES:
         if col in X.columns:
             s = X[col].replace("", pd.NA)
-            s = s.astype("object").where(s.notna(), None)
+            s = s.astype("object").mask(s.isna(), None)
             codes, _ = pd.factorize(s, use_na_sentinel=True)
             X[col] = codes
     y = df[LABEL_COLUMN].astype(int)
@@ -120,10 +145,10 @@ def predict(
             if col in NUMERIC_FEATURES:
                 X[col] = pd.to_numeric(X[col], errors="coerce")
             elif col in CATEGORICAL_FEATURES:
-                s = X[col].astype("object").where(X[col].notna(), None)
+                s = X[col].astype("object").mask(X[col].isna(), None)
                 if categorical_codes and col in categorical_codes:
                     mapping = {v: i for i, v in enumerate(categorical_codes[col])}
-                    X[col] = s.map(lambda v, m=mapping: m.get(v, -1)).astype("int64")
+                    X[col] = s.map(mapping).fillna(-1).astype("int64")
                 else:
                     codes, _ = pd.factorize(s, use_na_sentinel=True)
                     X[col] = codes
@@ -215,6 +240,8 @@ __all__ = [
     "EMBEDDING_PCA_DIM",
     "LABEL_COLUMN",
     "NUMERIC_FEATURES",
+    "POOL_INJECTED_FEATURES",
+    "REQUIRED_FEATURES",
     "apply_reranker",
     "fit_embedding_pca",
     "infer_active_feature_families",

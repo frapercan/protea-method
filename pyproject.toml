@@ -81,7 +81,7 @@ select = ["E", "F", "W", "I", "B", "UP", "N", "RUF"]
 ignore = ["E501", "N803", "N806", "RUF002"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 # numpy's generic ``ndarray`` type arguments add a lot of ``Any, Any``
