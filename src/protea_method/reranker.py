@@ -102,7 +102,7 @@ def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     for col in CATEGORICAL_FEATURES:
         if col in X.columns:
             s = X[col].replace("", pd.NA)
-            s = s.astype("object").where(s.notna(), None)
+            s = s.astype("object").mask(s.isna(), None)
             codes, _ = pd.factorize(s, use_na_sentinel=True)
             X[col] = codes
     y = df[LABEL_COLUMN].astype(int)
@@ -145,10 +145,10 @@ def predict(
             if col in NUMERIC_FEATURES:
                 X[col] = pd.to_numeric(X[col], errors="coerce")
             elif col in CATEGORICAL_FEATURES:
-                s = X[col].astype("object").where(X[col].notna(), None)
+                s = X[col].astype("object").mask(X[col].isna(), None)
                 if categorical_codes and col in categorical_codes:
                     mapping = {v: i for i, v in enumerate(categorical_codes[col])}
-                    X[col] = s.map(lambda v, m=mapping: m.get(v, -1)).astype("int64")
+                    X[col] = s.map(mapping).fillna(-1).astype("int64")
                 else:
                     codes, _ = pd.factorize(s, use_na_sentinel=True)
                     X[col] = codes
