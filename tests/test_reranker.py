@@ -11,6 +11,7 @@ from __future__ import annotations
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
+import pytest
 
 from protea_method import (
     ALL_FEATURES,
@@ -29,7 +30,11 @@ from protea_method import (
 # package-root ``predict`` is the higher-level orchestrator in
 # ``pipeline`` (different signature). Import the helper via the
 # submodule to avoid the namespace collision.
-from protea_method.reranker import predict
+from protea_method.reranker import (
+    POOL_INJECTED_FEATURES,
+    REQUIRED_FEATURES,
+    predict,
+)
 
 
 def _make_df(n: int = 100, seed: int = 42) -> pd.DataFrame:
@@ -65,6 +70,34 @@ def test_prepare_dataset_shapes() -> None:
     assert len(y) == len(df)
     for col in CATEGORICAL_FEATURES:
         assert X[col].dtype.kind in ("i", "u")  # label-encoded
+
+
+def test_prepare_dataset_omits_absent_pool_injected_columns() -> None:
+    """A single-manifest frame has no plm_id / k_context and must not need them.
+
+    Those two columns are stamped by the lab's pooled multi-manifest loader.
+    Requiring them of every frame would force a fabricated value, which is the
+    seam ADR-D45 documents.
+    """
+    df = _make_df().drop(columns=list(POOL_INJECTED_FEATURES))
+    X, y = prepare_dataset(df)
+    assert list(X.columns) == list(REQUIRED_FEATURES)
+    assert len(y) == len(df)
+
+
+def test_prepare_dataset_keeps_pool_injected_columns_when_present() -> None:
+    df = _make_df()
+    X, _ = prepare_dataset(df)
+    assert list(X.columns) == ALL_FEATURES
+    for col in POOL_INJECTED_FEATURES:
+        assert col in X.columns
+
+
+def test_prepare_dataset_still_requires_a_real_feature() -> None:
+    """Optional means pool-injected, not "any missing column is fine"."""
+    df = _make_df().drop(columns=["vote_count"])
+    with pytest.raises(KeyError):
+        prepare_dataset(df)
 
 
 def test_predict_returns_probabilities_in_unit_interval() -> None:
