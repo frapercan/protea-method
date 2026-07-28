@@ -19,10 +19,16 @@ enrichment (alignment, taxonomy, Anc2Vec, lineage), and LightGBM re-ranker-apply
 on FastAPI, SQLAlchemy, or protea-core. No Postgres, no RabbitMQ, no workers
 required for standalone use.
 
-**Status:** v0.3.1, production. Inference path is live: the Docker image is
-published to DockerHub and has been submitted to FunctionBench. SemVer
-coordinated with `protea-contracts`; breaking changes to the feature schema
-require a major bump.
+**Status:** in use. The inference path is live, the container image is
+published, and it has been submitted to the community benchmark. Breaking
+changes to the feature schema are coordinated with the contract package.
+Every internal dependency in this stack now names a commit rather than a
+branch, checked on each pull request. Updating one is a pull request here that
+moves the commit, gated by this repository's own checks.
+
+A definitive campaign run is being prepared for the doctoral thesis, and
+earlier experimental results are being recomputed rather than carried forward.
+No headline number is quoted in this file as current.
 
 <!-- protea-stack:start -->
 
