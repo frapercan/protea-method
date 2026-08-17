@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from protea_method.knn_search import _release_corpus_vram
+from protea_method._vram import _released
 
 
 class _Sentinel:
@@ -27,7 +27,7 @@ def test_a_cpu_device_frees_nothing_and_imports_nothing(monkeypatch):
     """The CPU path must not import torch, since it may not be installed."""
     monkeypatch.setitem(__import__("sys").modules, "torch", None)
 
-    _release_corpus_vram(_Sentinel(), SimpleNamespace(type="cpu"))
+    _released([], _Sentinel(), SimpleNamespace(type="cpu"))
 
 
 def test_a_cuda_device_empties_the_cache(monkeypatch):
@@ -35,7 +35,7 @@ def test_a_cuda_device_empties_the_cache(monkeypatch):
     fake = SimpleNamespace(cuda=SimpleNamespace(empty_cache=lambda: calls.append("empty")))
     monkeypatch.setitem(__import__("sys").modules, "torch", fake)
 
-    _release_corpus_vram(_Sentinel(), SimpleNamespace(type="cuda"))
+    _released([], _Sentinel(), SimpleNamespace(type="cuda"))
 
     assert calls == ["empty"]
 
@@ -46,7 +46,7 @@ def test_the_cpu_path_does_not_empty_the_cache(monkeypatch):
     fake = SimpleNamespace(cuda=SimpleNamespace(empty_cache=lambda: calls.append("empty")))
     monkeypatch.setitem(__import__("sys").modules, "torch", fake)
 
-    _release_corpus_vram(_Sentinel(), SimpleNamespace(type="cpu"))
+    _released([], _Sentinel(), SimpleNamespace(type="cpu"))
 
     assert calls == []
 
@@ -57,7 +57,7 @@ def test_an_mps_device_is_treated_as_not_cuda(monkeypatch):
     fake = SimpleNamespace(cuda=SimpleNamespace(empty_cache=lambda: calls.append("empty")))
     monkeypatch.setitem(__import__("sys").modules, "torch", fake)
 
-    _release_corpus_vram(_Sentinel(), SimpleNamespace(type="mps"))
+    _released([], _Sentinel(), SimpleNamespace(type="mps"))
 
     assert calls == []
 
@@ -70,9 +70,9 @@ def test_the_search_calls_it_before_returning():
 
     source = inspect.getsource(knn_search._search_torch)
 
-    assert "_release_corpus_vram(R_t, device)" in source
+    assert "_released(results, R_t, device)" in source
     # Before the return, or the tensor survives the call it was meant to outlive.
-    assert source.index("_release_corpus_vram") < source.rindex("return results")
+    assert "return _released(" in source
 
 
 @pytest.mark.parametrize("device_type", ["cpu", "cuda", "mps", "xpu"])
@@ -81,4 +81,4 @@ def test_it_never_raises_whatever_the_device(monkeypatch, device_type):
     fake = SimpleNamespace(cuda=SimpleNamespace(empty_cache=lambda: None))
     monkeypatch.setitem(__import__("sys").modules, "torch", fake)
 
-    _release_corpus_vram(_Sentinel(), SimpleNamespace(type=device_type))
+    _released([], _Sentinel(), SimpleNamespace(type=device_type))

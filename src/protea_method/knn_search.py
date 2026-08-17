@@ -64,6 +64,8 @@ from typing import Any
 
 import numpy as np
 
+from protea_method._vram import _released
+
 logger = logging.getLogger(__name__)
 
 
@@ -492,33 +494,7 @@ def _search_torch(
             # answered fewer rows than asked from skipping the difference.
             start += len(rows)
 
-    _release_corpus_vram(R_t, device)
-    return results
-
-
-def _release_corpus_vram(R_t: Any, device: Any) -> None:
-    """Free the corpus tensor and empty the CUDA cache when the search ran on GPU.
-
-    Without this, looping ``_search_torch`` across the three GO aspects pins
-    about 10 GB on a 12 GB card, and the corpus-fits-in-VRAM check inside
-    ``_torch_target_device`` then flips the device back to CPU for the rest of
-    the run. The run completes, slower, and says nothing: the only symptom is
-    that the second and third aspects did not use the card the first one did.
-
-    Discovered 2026-05-27 on an RTX 3060 with ankh-large, 1536 dimensions over
-    527k proteins, at 3.2 GB per aspect copy.
-
-    The campaign no longer reaches this path, because PROTEA pins
-    ``PROTEA_KNN_DEVICE`` to cpu rather than letting it resolve to "auto". It is
-    still worth carrying, for the reason the pin exists: "auto" resolves to CUDA
-    whenever a card is visible, so any caller reaching this library without that
-    pin gets the leak.
-    """
-    if device.type == "cuda":
-        import torch as _torch
-
-        del R_t
-        _torch.cuda.empty_cache()
+    return _released(results, R_t, device)
 
 
 def _l2_normalize_rows(M: np.ndarray) -> np.ndarray:
