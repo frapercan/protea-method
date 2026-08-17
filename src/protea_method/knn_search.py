@@ -68,6 +68,24 @@ def _numpy_query_chunk_default() -> int:
     return int(raw)
 
 
+def _check_alignment(
+    hits: list[list[tuple[str, float]]], n_queries: int, backend: str
+) -> None:
+    """Refuse a result that does not line up with the queries that produced it.
+
+    Position i belongs to query i, and callers zip this against their own
+    accession list. A short return therefore does not lose the tail: it shifts
+    the alignment and hands each query a later one's neighbours, which reads as
+    a plausible answer rather than as a failure. Hence checked, not trusted.
+    """
+    if len(hits) != n_queries:
+        raise RuntimeError(
+            f"Backend {backend!r} returned {len(hits):,} result rows for "
+            f"{n_queries:,} queries. Results are positional, so a mismatch "
+            f"misaligns every query after the gap; refusing to return."
+        )
+
+
 def search_knn(
     query_embeddings: np.ndarray,
     ref_embeddings: np.ndarray,
@@ -99,12 +117,10 @@ def search_knn(
     distance_threshold:
         If set, discard neighbours with distance > threshold.
     backend:
-        ``"numpy"`` (exact brute-force), ``"faiss"``, or ``"torch"``
-        (chunked GPU/CPU KNN via ``torch.cdist + topk``; recommended for
-        production runs where torch is installed). Device selection for
-        the torch backend is controlled by ``PROTEA_KNN_DEVICE`` (default
-        ``"auto"``); query chunk size by ``PROTEA_KNN_CHUNK_SIZE`` (default
-        4096).
+        ``"numpy"`` (exact brute-force), ``"faiss"``, or ``"torch"`` (chunked
+        GPU/CPU KNN, recommended where torch is installed; device via
+        ``PROTEA_KNN_DEVICE``, default ``"auto"``, and query chunk size via
+        ``PROTEA_KNN_CHUNK_SIZE``, default 4096).
     metric:
         ``"cosine"`` or ``"l2"``.
     pre_normalized:
@@ -113,14 +129,10 @@ def search_knn(
         skips the per-call normalisation. No-op for ``l2`` or ``torch``.
     faiss_index_type:
         One of ``"Flat"``, ``"IVFFlat"``, ``"HNSW"`` (ignored for numpy).
-    faiss_nlist:
-        Number of Voronoi cells for ``IVFFlat``.
-    faiss_nprobe:
-        Cells visited at search time for ``IVFFlat``.
-    faiss_hnsw_m:
-        Connections per node for ``HNSW``.
-    faiss_hnsw_ef_search:
-        Beam width at search time for ``HNSW``.
+        ``faiss_nlist`` / ``faiss_nprobe`` tune ``IVFFlat`` (Voronoi cells,
+        and cells visited at search time); ``faiss_hnsw_m`` /
+        ``faiss_hnsw_ef_search`` tune ``HNSW`` (connections per node, and
+        beam width at search time).
 
     Returns
     -------
@@ -129,7 +141,7 @@ def search_knn(
         Inner list: ``(ref_accession, distance)`` sorted ascending by distance.
     """
     if backend == "faiss":
-        return _search_faiss(
+        hits = _search_faiss(
             query_embeddings,
             ref_embeddings,
             ref_accessions,
@@ -142,8 +154,8 @@ def search_knn(
             hnsw_m=faiss_hnsw_m,
             hnsw_ef_search=faiss_hnsw_ef_search,
         )
-    if backend == "numpy":
-        return _search_numpy(
+    elif backend == "numpy":
+        hits = _search_numpy(
             query_embeddings,
             ref_embeddings,
             ref_accessions,
@@ -152,8 +164,8 @@ def search_knn(
             metric=metric,
             pre_normalized=pre_normalized,
         )
-    if backend == "torch":
-        return _search_torch(
+    elif backend == "torch":
+        hits = _search_torch(
             query_embeddings,
             ref_embeddings,
             ref_accessions,
@@ -161,7 +173,12 @@ def search_knn(
             distance_threshold=distance_threshold,
             metric=metric,
         )
-    raise ValueError(f"Unknown search backend: {backend!r}. Choose 'numpy', 'faiss', or 'torch'.")
+    else:
+        raise ValueError(
+            f"Unknown search backend: {backend!r}. Choose 'numpy', 'faiss', or 'torch'."
+        )
+    _check_alignment(hits, query_embeddings.shape[0], backend)
+    return hits
 
 
 def _search_numpy(
@@ -288,6 +305,59 @@ def _torch_device() -> Any:
     return torch.device(requested)
 
 
+def _chunk_topk(
+    Q_chunk_np: np.ndarray,
+    R_t: Any,
+    *,
+    metric: str,
+    k_eff: int,
+    device: Any,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Score one query chunk against the whole corpus, keep the k nearest.
+
+    Returns ``(distances, indices)`` on the host, both ``(chunk_rows, k_eff)``.
+    Separated out because this is the only part that can run out of memory, so
+    the caller can retry it with fewer rows and decide nothing else again.
+    """
+    import torch  # local import
+
+    Q_t = torch.from_numpy(Q_chunk_np).to(device)
+    if metric == "cosine":
+        Q_t = torch.nn.functional.normalize(Q_t, p=2, dim=1)
+        # distance = 1 - cosine similarity
+        dist = 1.0 - (Q_t @ R_t.T)
+    else:  # l2 -- squared Euclidean, consistent with numpy backend
+        # Expanded form rather than torch.cdist: it matches the numpy backend
+        # and avoids the sqrt. The clamp absorbs the small negative values the
+        # matmul shortcut can produce near zero distance.
+        Q2 = (Q_t ** 2).sum(dim=1, keepdim=True)  # (C, 1)
+        R2_t = (R_t ** 2).sum(dim=1)              # (N,)
+        dist = torch.clamp(Q2 + R2_t - 2.0 * (Q_t @ R_t.T), min=0.0)
+    top_dist, top_idx = torch.topk(dist, k_eff, dim=1, largest=False, sorted=True)
+    return top_dist.cpu().numpy(), top_idx.cpu().numpy()
+
+
+def _hits_from_topk(
+    top_dist: np.ndarray,
+    top_idx: np.ndarray,
+    ref_accessions: list[str],
+    *,
+    k_eff: int,
+    distance_threshold: float | None,
+) -> list[list[tuple[str, float]]]:
+    """Name the neighbours of each row in one chunk's topk arrays."""
+    rows: list[list[tuple[str, float]]] = []
+    for row_i in range(top_dist.shape[0]):
+        hits: list[tuple[str, float]] = []
+        for col_i in range(k_eff):
+            dist_val = float(top_dist[row_i, col_i])
+            if distance_threshold is not None and dist_val > distance_threshold:
+                break
+            hits.append((ref_accessions[int(top_idx[row_i, col_i])], dist_val))
+        rows.append(hits)
+    return rows
+
+
 def _search_torch(
     Q: np.ndarray,
     R: np.ndarray,
@@ -307,9 +377,10 @@ def _search_torch(
       (default 4096). Each chunk is moved to the device, distances are
       computed against the full corpus, ``topk`` extracts the k nearest,
       and results are copied back to CPU before the next chunk.
-    - On ``torch.cuda.OutOfMemoryError`` the chunk size is halved and
-      the chunk is retried up to 3 times; after that the error is
-      re-raised.
+    - On out of memory the chunk is halved and the SAME rows are retried,
+      so the queries that did not fit are still answered. The smaller size
+      is kept for the rest of the call. A single row that does not fit
+      raises.
     - ``torch.float32`` is used throughout (fp16/bf16 sacrifices
       retrieval precision; not worth it here).
 
@@ -320,9 +391,8 @@ def _search_torch(
         product. ``torch.cdist`` is avoided for cosine (the normalised
         dot-product path is numerically cleaner).
     l2
-        ``torch.cdist(Q_chunk, R, p=2,
-        compute_mode="donot_use_mm_for_euclid_dist")`` to avoid the
-        matmul shortcut that can produce small negative squared distances.
+        Squared Euclidean by the expanded form, clamped at zero, matching
+        the numpy backend.
     """
     import torch  # local import
 
@@ -353,62 +423,51 @@ def _search_torch(
         if metric == "cosine":
             R_t = torch.nn.functional.normalize(R_t, p=2, dim=1)
 
-        chunk_size = _torch_knn_chunk_size()
         results: list[list[tuple[str, float]]] = []
 
-        for start in range(0, n_queries, chunk_size):
+        # A cursor, not a fixed stride: on OOM the chunk is halved and the SAME
+        # cursor is retried, so the rows that did not fit are still processed
+        # and the cursor advances only by what a pass actually consumed. A
+        # stride loop would step over the tail of a shrunk chunk, dropping
+        # those queries and silently shifting every later query's neighbours
+        # onto the wrong protein. The smaller size is kept for the whole call:
+        # a corpus that overflowed once will overflow again.
+        rows_per_chunk = _torch_knn_chunk_size()
+        start = 0
+        while start < n_queries:
+            take = min(rows_per_chunk, n_queries - start)
             Q_chunk_np = np.ascontiguousarray(
-                Q[start : start + chunk_size], dtype=np.float32
+                Q[start : start + take], dtype=np.float32
             )
-            remaining_halvings = 3
-            while True:
-                try:
-                    Q_t = torch.from_numpy(Q_chunk_np).to(device)
-                    if metric == "cosine":
-                        Q_t = torch.nn.functional.normalize(Q_t, p=2, dim=1)
-                        # distance = 1 - cosine similarity
-                        dist = 1.0 - (Q_t @ R_t.T)
-                    else:  # l2 -- squared Euclidean, consistent with numpy backend
-                        # torch.cdist(p=2) returns Euclidean (unsquared).
-                        # Use the squared-distance formula directly to match
-                        # the numpy backend and avoid the sqrt overhead.
-                        Q2 = (Q_t ** 2).sum(dim=1, keepdim=True)  # (C, 1)
-                        R2_t = (R_t ** 2).sum(dim=1)              # (N,)
-                        dist = torch.clamp(
-                            Q2 + R2_t - 2.0 * (Q_t @ R_t.T), min=0.0
-                        )
-                    top_dist, top_idx = torch.topk(
-                        dist, k_eff, dim=1, largest=False, sorted=True
-                    )
-                    top_dist_cpu = top_dist.cpu().numpy()
-                    top_idx_cpu = top_idx.cpu().numpy()
-                    break
-                except RuntimeError as exc:
-                    if "out of memory" not in str(exc).lower() or remaining_halvings == 0:
-                        raise
-                    remaining_halvings -= 1
-                    new_size = max(1, Q_chunk_np.shape[0] // 2)
-                    logger.warning(
-                        "CUDA OOM on chunk of %d rows; retrying with %d rows "
-                        "(%d retries left).",
-                        Q_chunk_np.shape[0],
-                        new_size,
-                        remaining_halvings,
-                    )
-                    # Re-split: process only first half of the chunk in this
-                    # iteration; the second half will be picked up by the outer
-                    # loop adjustment.  Simplest OOM recovery: shrink + retry.
-                    Q_chunk_np = Q_chunk_np[:new_size]
+            try:
+                top_dist_cpu, top_idx_cpu = _chunk_topk(
+                    Q_chunk_np, R_t, metric=metric, k_eff=k_eff, device=device
+                )
+            except RuntimeError as exc:
+                if "out of memory" not in str(exc).lower() or take == 1:
+                    # A single query against the corpus that does not fit
+                    # cannot be helped by halving, and returning short results
+                    # would be worse than failing, so the search gives up here.
+                    raise
+                rows_per_chunk = max(1, take // 2)
+                logger.warning(
+                    "CUDA OOM on chunk of %d rows at query %d; retrying the "
+                    "same rows with a chunk of %d.",
+                    take,
+                    start,
+                    rows_per_chunk,
+                )
+                continue
 
-            n_rows = top_dist_cpu.shape[0]
-            for row_i in range(n_rows):
-                hits: list[tuple[str, float]] = []
-                for col_i in range(k_eff):
-                    dist_val = float(top_dist_cpu[row_i, col_i])
-                    if distance_threshold is not None and dist_val > distance_threshold:
-                        break
-                    hits.append((ref_accessions[int(top_idx_cpu[row_i, col_i])], dist_val))
-                results.append(hits)
+            rows = _hits_from_topk(
+                top_dist_cpu, top_idx_cpu, ref_accessions,
+                k_eff=k_eff, distance_threshold=distance_threshold,
+            )
+            results.extend(rows)
+            # Advance by the rows that produced output, not by the requested
+            # stride: tying the cursor to the output is what keeps a chunk that
+            # answered fewer rows than asked from skipping the difference.
+            start += len(rows)
     _release_corpus_vram(R_t, device)
     return results
 
