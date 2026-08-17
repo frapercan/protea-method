@@ -64,6 +64,8 @@ from typing import Any
 
 import numpy as np
 
+from protea_method._vram import _released
+
 logger = logging.getLogger(__name__)
 
 
@@ -492,7 +494,7 @@ def _search_torch(
             # answered fewer rows than asked from skipping the difference.
             start += len(rows)
 
-    return results
+    return _released(results, R_t, device)
 
 
 def _l2_normalize_rows(M: np.ndarray) -> np.ndarray:
