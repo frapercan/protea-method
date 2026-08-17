@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 import pytest
 
@@ -115,6 +117,113 @@ def test_torch_chunked_path_consistent(
             rtol=1e-5,
             atol=1e-6,
         )
+
+
+# ---------------------------------------------------------------------------
+# OOM recovery: the rows that did not fit must still be answered
+# ---------------------------------------------------------------------------
+
+
+def _oom() -> RuntimeError:
+    """The message torch raises when an allocation does not fit."""
+    return RuntimeError("CUDA out of memory. Tried to allocate 20.00 GiB")
+
+
+def test_an_oom_reprocesses_the_rows_it_could_not_fit(
+    corpus: tuple[np.ndarray, np.ndarray, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shrinking the chunk must not skip the rows that provoked the shrink.
+
+    This is a regression test, and the bug it guards against did not announce
+    itself. Recovery kept the first half of the chunk and left the second half
+    to an outer loop that had already stepped past it, so the result list came
+    back short. Results are positional, so nothing raised: every query after
+    the first OOM was handed a later query's neighbours and scored against its
+    own ground truth. The observable symptom was a model that looked weak.
+    """
+    queries, refs, accessions = corpus
+    k = 10
+    expected = search_knn(queries, refs, accessions, k=k, backend="numpy", metric="cosine")
+
+    monkeypatch.setenv("PROTEA_KNN_DEVICE", "cpu")
+    monkeypatch.setenv("PROTEA_KNN_CHUNK_SIZE", "16")
+
+    real_topk = torch.topk
+    refusals = 0
+
+    def flaky_topk(tensor: Any, k_arg: int, **kwargs: object) -> object:
+        """Refuse anything wider than 4 rows, forcing 16 -> 8 -> 4."""
+        nonlocal refusals
+        if tensor.shape[0] > 4:
+            refusals += 1
+            raise _oom()
+        return real_topk(tensor, k_arg, **kwargs)
+
+    monkeypatch.setattr(torch, "topk", flaky_topk)
+
+    got = search_knn(queries, refs, accessions, k=k, backend="torch", metric="cosine")
+
+    assert refusals > 0, "the OOM path was never entered, so nothing was tested"
+    assert len(got) == len(queries), "queries were dropped rather than retried"
+    for q_i, (exp_hits, got_hits) in enumerate(zip(expected, got, strict=True)):
+        assert [a for a, _ in got_hits] == [a for a, _ in exp_hits], (
+            f"query {q_i} was answered with another query's neighbours"
+        )
+
+
+def test_an_oom_on_a_single_row_fails_instead_of_returning_short(
+    small_corpus: tuple[np.ndarray, np.ndarray, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When halving can no longer help, the search must give up loudly."""
+    queries, refs, accessions = small_corpus
+    monkeypatch.setenv("PROTEA_KNN_DEVICE", "cpu")
+    monkeypatch.setenv("PROTEA_KNN_CHUNK_SIZE", "4")
+
+    def always_oom(tensor: Any, k_arg: int, **kwargs: object) -> object:
+        raise _oom()
+
+    monkeypatch.setattr(torch, "topk", always_oom)
+
+    with pytest.raises(RuntimeError, match="out of memory"):
+        search_knn(queries, refs, accessions, k=3, backend="torch", metric="cosine")
+
+
+def test_a_non_oom_error_is_not_retried(
+    small_corpus: tuple[np.ndarray, np.ndarray, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only memory pressure justifies shrinking; other faults propagate."""
+    queries, refs, accessions = small_corpus
+    monkeypatch.setenv("PROTEA_KNN_DEVICE", "cpu")
+
+    def broken_topk(tensor: Any, k_arg: int, **kwargs: object) -> object:
+        raise RuntimeError("device-side assert triggered")
+
+    monkeypatch.setattr(torch, "topk", broken_topk)
+
+    with pytest.raises(RuntimeError, match="device-side assert"):
+        search_knn(queries, refs, accessions, k=3, backend="torch", metric="cosine")
+
+
+def test_a_short_backend_return_is_refused(
+    small_corpus: tuple[np.ndarray, np.ndarray, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The positional contract is checked at the boundary, not trusted.
+
+    Any backend can regress the same way, so the guard lives in ``search_knn``
+    rather than in the backend that happened to break.
+    """
+    queries, refs, accessions = small_corpus
+    monkeypatch.setattr(
+        "protea_method.knn_search._search_torch",
+        lambda *a, **kw: [[(accessions[0], 0.0)]],  # one row for five queries
+    )
+
+    with pytest.raises(RuntimeError, match="result rows"):
+        search_knn(queries, refs, accessions, k=3, backend="torch", metric="cosine")
 
 
 # ---------------------------------------------------------------------------
