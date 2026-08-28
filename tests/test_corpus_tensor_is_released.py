@@ -31,7 +31,7 @@ class _Corpus:
     def __init__(self) -> None:
         self.shape = (4, 3)
 
-    def to(self, _device):  # noqa: ANN001
+    def to(self, _device):
         return self
 
 
@@ -46,7 +46,7 @@ def _fake_torch(alive_at_drain: list[bool], probe: list) -> types.SimpleNamespac
         def __exit__(self, *exc):
             return False
 
-    def from_numpy(_arr):  # noqa: ANN001
+    def from_numpy(_arr):
         # Created here and handed straight over, never held: a closure keeping
         # its own reference would make this fixture the thing that pins the
         # tensor, and the test would fail on the correct code.
