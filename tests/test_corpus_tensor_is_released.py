@@ -20,6 +20,7 @@ from __future__ import annotations
 import sys
 import types
 import weakref
+from typing import Any, Literal
 
 import numpy as np
 import pytest
@@ -31,22 +32,22 @@ class _Corpus:
     def __init__(self) -> None:
         self.shape = (4, 3)
 
-    def to(self, _device):
+    def to(self, _device: Any) -> _Corpus:
         return self
 
 
-def _fake_torch(alive_at_drain: list[bool], probe: list) -> types.SimpleNamespace:
+def _fake_torch(alive_at_drain: list[bool], probe: list[Any]) -> types.SimpleNamespace:
     def empty_cache() -> None:
         alive_at_drain.append(probe[0]() is not None)
 
     class _NoGrad:
-        def __enter__(self):
+        def __enter__(self) -> _NoGrad:
             return self
 
-        def __exit__(self, *exc):
+        def __exit__(self, *exc: object) -> Literal[False]:
             return False
 
-    def from_numpy(_arr):
+    def from_numpy(_arr: Any) -> _Corpus:
         # Created here and handed straight over, never held: a closure keeping
         # its own reference would make this fixture the thing that pins the
         # tensor, and the test would fail on the correct code.
@@ -58,19 +59,19 @@ def _fake_torch(alive_at_drain: list[bool], probe: list) -> types.SimpleNamespac
         no_grad=_NoGrad,
         from_numpy=from_numpy,
         cuda=types.SimpleNamespace(empty_cache=empty_cache),
-        nn=types.SimpleNamespace(
-            functional=types.SimpleNamespace(normalize=lambda t, **_: t)
-        ),
+        nn=types.SimpleNamespace(functional=types.SimpleNamespace(normalize=lambda t, **_: t)),
     )
 
 
 @pytest.mark.parametrize("metric", ["l2", "cosine"])
-def test_the_corpus_is_dead_by_the_time_the_allocator_is_drained(monkeypatch, metric):
+def test_the_corpus_is_dead_by_the_time_the_allocator_is_drained(
+    monkeypatch: pytest.MonkeyPatch, metric: str
+) -> None:
     """The whole point, and the thing the previous tests could not see."""
     from protea_method import knn_search
 
     alive_at_drain: list[bool] = []
-    probe: list = []
+    probe: list[Any] = []
     fake = _fake_torch(alive_at_drain, probe)
     monkeypatch.setitem(sys.modules, "torch", fake)
     monkeypatch.setattr(
@@ -99,12 +100,12 @@ def test_the_corpus_is_dead_by_the_time_the_allocator_is_drained(monkeypatch, me
     )
 
 
-def test_a_cpu_run_never_touches_the_cuda_allocator(monkeypatch):
+def test_a_cpu_run_never_touches_the_cuda_allocator(monkeypatch: pytest.MonkeyPatch) -> None:
     """Draining on CPU would import torch's cuda module for nothing, and may not exist."""
     from protea_method import knn_search
 
     alive_at_drain: list[bool] = []
-    probe: list = []
+    probe: list[Any] = []
     fake = _fake_torch(alive_at_drain, probe)
     monkeypatch.setitem(sys.modules, "torch", fake)
     monkeypatch.setattr(
