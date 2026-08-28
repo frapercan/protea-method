@@ -44,7 +44,7 @@ torch = { version = ">=2.0,<3.0", optional = true }
 # the corresponding installs of this package.
 transformers = { version = ">=4.40", optional = true }
 sentencepiece = { version = ">=0.2", optional = true }
-protea-backends = { git = "https://github.com/frapercan/protea-backends.git", rev = "47f023551a274880b941a1e712e705e74ffd0871", optional = true }
+protea-backends = { git = "https://github.com/frapercan/protea-backends.git", rev = "9b76719a14d729390be7d0faf957fae06a31ced5", optional = true }
 
 [tool.poetry.extras]
 # `pip install protea-method[mil]` enables the MIL head. CPU users
