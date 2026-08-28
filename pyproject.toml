@@ -27,7 +27,7 @@ classifiers = [
 python = ">=3.12,<4.0"
 # Hard rule: no FastAPI, no SQLAlchemy, no protea-core.
 # This is the slim shipping path for the inference method.
-"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", rev = "7500dc2313ed2df9c53821f2a10588c1ee7abe81" }
+"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", rev = "74d329ff22a77baa5142f477889dd6e2e2ca2a4f" }
 numpy = ">=1.24"
 pandas = ">=2.0"
 lightgbm = ">=4.0"
