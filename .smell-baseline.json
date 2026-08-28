@@ -20,7 +20,7 @@
       "kind": "method",
       "path": "src/protea_method/knn_search.py",
       "name": "search_knn",
-      "line": 102,
+      "line": 104,
       "metric": 92,
       "threshold": 60
     },
@@ -29,7 +29,7 @@
       "kind": "method",
       "path": "src/protea_method/knn_search.py",
       "name": "_search_numpy",
-      "line": 196,
+      "line": 198,
       "metric": 68,
       "threshold": 60
     },
@@ -38,7 +38,7 @@
       "kind": "method",
       "path": "src/protea_method/knn_search.py",
       "name": "_search_torch",
-      "line": 398,
+      "line": 400,
       "metric": 98,
       "threshold": 60
     },
@@ -47,7 +47,7 @@
       "kind": "method",
       "path": "src/protea_method/knn_search.py",
       "name": "_search_faiss",
-      "line": 689,
+      "line": 691,
       "metric": 66,
       "threshold": 60
     },
@@ -83,7 +83,7 @@
       "kind": "params",
       "path": "src/protea_method/knn_search.py",
       "name": "search_knn",
-      "line": 102,
+      "line": 104,
       "metric": 13,
       "threshold": 6
     },
@@ -92,7 +92,7 @@
       "kind": "params",
       "path": "src/protea_method/knn_search.py",
       "name": "_search_numpy",
-      "line": 196,
+      "line": 198,
       "metric": 7,
       "threshold": 6
     },
@@ -101,7 +101,7 @@
       "kind": "params",
       "path": "src/protea_method/knn_search.py",
       "name": "_search_faiss",
-      "line": 689,
+      "line": 691,
       "metric": 11,
       "threshold": 6
     },
@@ -110,7 +110,7 @@
       "kind": "params",
       "path": "src/protea_method/knn_search.py",
       "name": "_build_faiss_index",
-      "line": 757,
+      "line": 759,
       "metric": 10,
       "threshold": 6
     },
