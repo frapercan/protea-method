@@ -77,10 +77,12 @@ def test_the_corpus_is_dead_by_the_time_the_allocator_is_drained(monkeypatch, me
         knn_search, "_torch_target_device", lambda *_a, **_k: types.SimpleNamespace(type="cuda")
     )
     monkeypatch.setattr(knn_search, "_torch_knn_chunk_size", lambda: 8)
+    from protea_method import _chunked_topk as ct
+
     monkeypatch.setattr(
-        knn_search, "_chunk_topk", lambda *_a, **_k: (np.zeros((1, 1)), np.zeros((1, 1), dtype=int))
+        ct, "_chunk_topk", lambda *_a, **_k: (np.zeros((1, 1)), np.zeros((1, 1), dtype=int))
     )
-    monkeypatch.setattr(knn_search, "_hits_from_topk", lambda *_a, **_k: [[("R000", 0.0)]])
+    monkeypatch.setattr(ct, "_hits_from_topk", lambda *_a, **_k: [[("R000", 0.0)]])
 
     knn_search._search_torch(
         np.zeros((1, 3), dtype=np.float32),
@@ -109,10 +111,12 @@ def test_a_cpu_run_never_touches_the_cuda_allocator(monkeypatch):
         knn_search, "_torch_target_device", lambda *_a, **_k: types.SimpleNamespace(type="cpu")
     )
     monkeypatch.setattr(knn_search, "_torch_knn_chunk_size", lambda: 8)
+    from protea_method import _chunked_topk as ct
+
     monkeypatch.setattr(
-        knn_search, "_chunk_topk", lambda *_a, **_k: (np.zeros((1, 1)), np.zeros((1, 1), dtype=int))
+        ct, "_chunk_topk", lambda *_a, **_k: (np.zeros((1, 1)), np.zeros((1, 1), dtype=int))
     )
-    monkeypatch.setattr(knn_search, "_hits_from_topk", lambda *_a, **_k: [[("R000", 0.0)]])
+    monkeypatch.setattr(ct, "_hits_from_topk", lambda *_a, **_k: [[("R000", 0.0)]])
 
     knn_search._search_torch(
         np.zeros((1, 3), dtype=np.float32),

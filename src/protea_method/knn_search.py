@@ -64,7 +64,7 @@ from typing import Any
 
 import numpy as np
 
-from protea_method._chunked_topk import chunked_topk
+from protea_method._chunked_topk import TorchSearch, chunked_topk
 
 logger = logging.getLogger(__name__)
 
@@ -344,57 +344,8 @@ def _torch_target_device(n_refs: int, dim: int) -> Any:
     return device
 
 
-def _chunk_topk(
-    Q_chunk_np: np.ndarray,
-    R_t: Any,
-    *,
-    metric: str,
-    k_eff: int,
-    device: Any,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Score one query chunk against the whole corpus, keep the k nearest.
-
-    Returns ``(distances, indices)`` on the host, both ``(chunk_rows, k_eff)``.
-    Separated out because this is the only part that can run out of memory, so
-    the caller can retry it with fewer rows and decide nothing else again.
-    """
-    import torch  # local import
-
-    Q_t = torch.from_numpy(Q_chunk_np).to(device)
-    if metric == "cosine":
-        Q_t = torch.nn.functional.normalize(Q_t, p=2, dim=1)
-        # distance = 1 - cosine similarity
-        dist = 1.0 - (Q_t @ R_t.T)
-    else:  # l2 -- squared Euclidean, consistent with numpy backend
-        # Expanded form rather than torch.cdist: it matches the numpy backend
-        # and avoids the sqrt. The clamp absorbs the small negative values the
-        # matmul shortcut can produce near zero distance.
-        Q2 = (Q_t ** 2).sum(dim=1, keepdim=True)  # (C, 1)
-        R2_t = (R_t ** 2).sum(dim=1)              # (N,)
-        dist = torch.clamp(Q2 + R2_t - 2.0 * (Q_t @ R_t.T), min=0.0)
-    top_dist, top_idx = torch.topk(dist, k_eff, dim=1, largest=False, sorted=True)
-    return top_dist.cpu().numpy(), top_idx.cpu().numpy()
 
 
-def _hits_from_topk(
-    top_dist: np.ndarray,
-    top_idx: np.ndarray,
-    ref_accessions: list[str],
-    *,
-    k_eff: int,
-    distance_threshold: float | None,
-) -> list[list[tuple[str, float]]]:
-    """Name the neighbours of each row in one chunk's topk arrays."""
-    rows: list[list[tuple[str, float]]] = []
-    for row_i in range(top_dist.shape[0]):
-        hits: list[tuple[str, float]] = []
-        for col_i in range(k_eff):
-            dist_val = float(top_dist[row_i, col_i])
-            if distance_threshold is not None and dist_val > distance_threshold:
-                break
-            hits.append((ref_accessions[int(top_idx[row_i, col_i])], dist_val))
-        rows.append(hits)
-    return rows
 
 
 def _search_torch(
@@ -450,13 +401,13 @@ def _search_torch(
             Q,
             R_t,
             ref_accessions,
-            metric=metric,
-            k_eff=k_eff,
-            device=device,
-            distance_threshold=distance_threshold,
-            chunk_rows=_torch_knn_chunk_size(),
-            chunk_topk=_chunk_topk,
-            hits_from_topk=_hits_from_topk,
+            TorchSearch(
+                metric=metric,
+                k_eff=k_eff,
+                device=device,
+                distance_threshold=distance_threshold,
+                chunk_rows=_torch_knn_chunk_size(),
+            ),
         )
 
         # The release happens HERE, where R_t is bound, and not in a helper. A
