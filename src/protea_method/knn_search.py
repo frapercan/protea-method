@@ -64,7 +64,7 @@ from typing import Any
 
 import numpy as np
 
-from protea_method._vram import _released
+from protea_method._chunked_topk import chunked_topk
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +438,6 @@ def _search_torch(
     import torch  # local import
 
     n_refs, dim = R.shape
-    n_queries = Q.shape[0]
     k_eff = min(k, n_refs)
     device = _torch_target_device(n_refs, dim)
 
@@ -447,54 +446,32 @@ def _search_torch(
         if metric == "cosine":
             R_t = torch.nn.functional.normalize(R_t, p=2, dim=1)
 
-        results: list[list[tuple[str, float]]] = []
+        results = chunked_topk(
+            Q,
+            R_t,
+            ref_accessions,
+            metric=metric,
+            k_eff=k_eff,
+            device=device,
+            distance_threshold=distance_threshold,
+            chunk_rows=_torch_knn_chunk_size(),
+            chunk_topk=_chunk_topk,
+            hits_from_topk=_hits_from_topk,
+        )
 
-        # A cursor, not a fixed stride: on OOM the chunk is halved and the SAME
-        # cursor is retried, so the rows that did not fit are still processed
-        # and the cursor advances only by what a pass actually consumed. A
-        # stride loop would step over the tail of a shrunk chunk, dropping
-        # those queries and silently shifting every later query's neighbours
-        # onto the wrong protein. The smaller size is kept for the whole call:
-        # a corpus that overflowed once will overflow again.
-        rows_per_chunk = _torch_knn_chunk_size()
-        start = 0
-        while start < n_queries:
-            take = min(rows_per_chunk, n_queries - start)
-            try:
-                top_dist, top_idx = _chunk_topk(
-                    np.ascontiguousarray(Q[start : start + take], dtype=np.float32),
-                    R_t,
-                    metric=metric,
-                    k_eff=k_eff,
-                    device=device,
-                )
-            except RuntimeError as exc:
-                if "out of memory" not in str(exc).lower() or take == 1:
-                    # A single query against the corpus that does not fit
-                    # cannot be helped by halving, and returning short results
-                    # would be worse than failing, so the search gives up here.
-                    raise
-                rows_per_chunk = max(1, take // 2)
-                logger.warning(
-                    "CUDA OOM on chunk of %d rows at query %d; retrying the "
-                    "same rows with a chunk of %d.",
-                    take,
-                    start,
-                    rows_per_chunk,
-                )
-                continue
+        # The release happens HERE, where R_t is bound, and not in a helper. A
+        # helper deleting its own parameter frees nothing: the caller's binding
+        # outlives the call, the refcount never reaches zero, and empty_cache then
+        # drains an allocator still holding the block. Measured with a weakref
+        # probe on that exact shape. Without a release at all, looping the three GO
+        # aspects pins about 10 GB on a 12 GB card and _torch_target_device then
+        # falls back to CPU for the second and third, so the run completes slower
+        # and says nothing.
+        if device.type == "cuda":
+            del R_t
+            torch.cuda.empty_cache()
 
-            rows = _hits_from_topk(
-                top_dist, top_idx, ref_accessions,
-                k_eff=k_eff, distance_threshold=distance_threshold,
-            )
-            results.extend(rows)
-            # Advance by the rows that produced output, not by the requested
-            # stride: tying the cursor to the output is what keeps a chunk that
-            # answered fewer rows than asked from skipping the difference.
-            start += len(rows)
-
-    return _released(results, R_t, device)
+    return results
 
 
 def _l2_normalize_rows(M: np.ndarray) -> np.ndarray:
