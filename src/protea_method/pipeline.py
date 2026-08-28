@@ -31,6 +31,7 @@ from typing import Any, Literal, overload
 import lightgbm as lgb
 import numpy as np
 
+from protea_method._donor_ledger import DonorLedger
 from protea_method._sequence_depth import dense_sequence_ranks
 from protea_method.anc2vec import Anc2VecIndex
 from protea_method.feature_enricher import ASPECT_CODES, enrich_v6_features
@@ -265,6 +266,32 @@ def _collect_query_distances(
     return out
 
 
+def _fresh_stat(
+    ref_acc: str,
+    ann: dict[str, Any],
+    k_pos: int,
+    seq_rank: int | None,
+    d: float,
+) -> dict[str, Any]:
+    """The stat a term gets on its first sighting, from its shallowest donor.
+
+    Everything here is either that donor's identity or an accumulator
+    seeded from it. ``k_position`` and ``sequence_rank`` stay as they are
+    set here: a term's depth is where it first became reachable, and a
+    later, further donor does not move that.
+    """
+    return {
+        "ledger": DonorLedger(),
+        "vote_count": 0,
+        "sum_d": 0.0,
+        "min_d": d,
+        "donor_ref": ref_acc,
+        "donor_ann": ann,
+        "k_position": k_pos,
+        "sequence_rank": seq_rank,
+    }
+
+
 def _tally_query_votes(
     *,
     q_idx: int,
@@ -299,20 +326,12 @@ def _tally_query_votes(
                 if aspect_separated:
                     if go_aspect_map.get(gtid, "") != aspect_key:
                         continue
+                seq_rank = seq_ranks[k_pos - 1] if seq_ranks is not None else None
                 stat = votes.get(gtid)
                 if stat is None:
-                    stat = {
-                        "vote_count": 0,
-                        "sum_d": 0.0,
-                        "min_d": d,
-                        "donor_ref": ref_acc,
-                        "donor_ann": ann,
-                        "k_position": k_pos,
-                        "sequence_rank": (
-                            seq_ranks[k_pos - 1] if seq_ranks is not None else None
-                        ),
-                    }
+                    stat = _fresh_stat(ref_acc, ann, k_pos, seq_rank, d)
                     votes[gtid] = stat
+                stat["ledger"].record(ref_acc, k_pos, seq_rank, d)
                 stat["vote_count"] += 1
                 stat["sum_d"] += d
                 if d < stat["min_d"]:
@@ -345,6 +364,7 @@ def _make_row(
 ) -> dict[str, Any]:
     """Build one PROTEA-shaped prediction row from a tally stat dict."""
     vote_count = int(stat["vote_count"])
+    ledger: DonorLedger = stat["ledger"]
     mean_d = stat["sum_d"] / vote_count
     donor_ref = str(stat["donor_ref"])
     donor_ann = stat["donor_ann"]
@@ -360,6 +380,11 @@ def _make_row(
         "qualifier": donor_ann.get("qualifier") or "",
         "evidence_code": donor_ann.get("evidence_code") or "",
         "k_position": int(stat["k_position"]),
+        "donor_accessions": list(ledger.accessions),
+        "donor_k_positions": list(ledger.k_positions),
+        "donor_sequence_ranks": ledger.sequence_ranks_or_none(),
+        "donor_distances": list(ledger.distances),
+        "donor_count": len(ledger),
         "sequence_rank": (
             None if stat.get("sequence_rank") is None else int(stat["sequence_rank"])
         ),
