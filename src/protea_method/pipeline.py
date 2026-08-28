@@ -23,6 +23,7 @@ Two modes are supported via ``PredictConfig.aspect_separated``:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, overload
@@ -30,6 +31,7 @@ from typing import Any, Literal, overload
 import lightgbm as lgb
 import numpy as np
 
+from protea_method._sequence_depth import dense_sequence_ranks
 from protea_method.anc2vec import Anc2VecIndex
 from protea_method.feature_enricher import ASPECT_CODES, enrich_v6_features
 from protea_method.knn_search import search_knn
@@ -95,6 +97,15 @@ class PredictConfig:
         ``PredictionSet`` row id. When given it is copied onto every
         emitted row so the lab dump and the live pipeline produce
         identical schemas.
+    sequence_keys:
+        Accession to sequence identity for the reference bank. When
+        given, every row carries a ``sequence_rank`` numbering its
+        query's neighbour list by distinct sequence rather than by
+        protein, so a cut at depth d admits d sequences. Forwarded
+        here rather than as a kwarg, as ``prediction_set_id`` is, to
+        keep ``predict``'s signature from growing further. A neighbour
+        absent from the map raises; the whole map absent leaves the
+        column empty on every row.
     """
 
     k: int = 5
@@ -106,6 +117,7 @@ class PredictConfig:
     compute_taxonomy: bool = False
     pre_normalized: bool = False
     prediction_set_id: str | None = None
+    sequence_keys: Mapping[str, str] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -260,15 +272,27 @@ def _tally_query_votes(
     annotations: dict[str, list[dict[str, Any]]],
     go_aspect_map: dict[int, str],
     aspect_separated: bool,
+    sequence_keys: Mapping[str, str] | None = None,
 ) -> dict[int, dict[str, Any]]:
-    """Run the vote-tally for one query and return per-(go_term) stats."""
+    """Run the vote-tally for one query and return per-(go_term) stats.
+
+    ``k_position`` numbers the neighbour list by protein. When
+    ``sequence_keys`` is given, ``sequence_rank`` numbers the same list
+    by distinct sequence, so a later cut at a depth admits that many
+    sequences rather than that many rows. Both are taken at the term's
+    first appearance, which is its shallowest donor.
+    """
     votes: dict[int, dict[str, Any]] = {}
     for aspect_key, neighbors_per_query in neighbors_by_aspect.items():
         if q_idx >= len(neighbors_per_query):
             continue
-        for k_pos, (ref_acc, distance) in enumerate(
-            neighbors_per_query[q_idx], start=1,
-        ):
+        top = neighbors_per_query[q_idx]
+        seq_ranks = (
+            dense_sequence_ranks(top, sequence_keys)
+            if sequence_keys is not None
+            else None
+        )
+        for k_pos, (ref_acc, distance) in enumerate(top, start=1):
             d = float(distance)
             for ann in annotations.get(ref_acc, []):
                 gtid = int(ann["go_term_id"])
@@ -284,6 +308,9 @@ def _tally_query_votes(
                         "donor_ref": ref_acc,
                         "donor_ann": ann,
                         "k_position": k_pos,
+                        "sequence_rank": (
+                            seq_ranks[k_pos - 1] if seq_ranks is not None else None
+                        ),
                     }
                     votes[gtid] = stat
                 stat["vote_count"] += 1
@@ -306,6 +333,7 @@ class _RowContext:
     pair_features: dict[tuple[str, str], dict[str, Any]]
     k_div: float
     prediction_set_id: str | None
+    sequence_keys: Mapping[str, str] | None = None
 
 
 def _make_row(
@@ -332,6 +360,9 @@ def _make_row(
         "qualifier": donor_ann.get("qualifier") or "",
         "evidence_code": donor_ann.get("evidence_code") or "",
         "k_position": int(stat["k_position"]),
+        "sequence_rank": (
+            None if stat.get("sequence_rank") is None else int(stat["sequence_rank"])
+        ),
         "go_term_frequency": ctx.go_term_freq.get(gtid, 0),
         "ref_annotation_density": ctx.ref_ann_density.get(donor_ref, 0),
         "neighbor_distance_std": distance_std,
@@ -375,6 +406,7 @@ def _accumulate_votes(
             annotations=annotations,
             go_aspect_map=ctx.go_aspect_map,
             aspect_separated=aspect_separated,
+            sequence_keys=ctx.sequence_keys,
         )
         for gtid, stat in votes.items():
             predictions.append(_make_row(q_acc, gtid, stat, distance_std, ctx))
@@ -399,6 +431,7 @@ def _build_row_context(
         pair_features=pair_features or {},
         k_div=float(max(1, cfg.k)),
         prediction_set_id=cfg.prediction_set_id,
+        sequence_keys=cfg.sequence_keys,
     )
 
 
