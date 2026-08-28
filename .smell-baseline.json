@@ -7,15 +7,6 @@
   },
   "offenders": [
     {
-      "key": "file::src/protea_method/knn_search.py::",
-      "kind": "file",
-      "path": "src/protea_method/knn_search.py",
-      "name": "",
-      "line": 0,
-      "metric": 801,
-      "threshold": 800
-    },
-    {
       "key": "method::src/protea_method/feature_enricher.py::enrich_v6_features",
       "kind": "method",
       "path": "src/protea_method/feature_enricher.py",
