@@ -68,6 +68,52 @@ def test_torch_cosine_matches_numpy(
         )
 
 
+def assert_same_ranking(
+    np_hits: list[tuple[str, float]],
+    t_hits: list[tuple[str, float]],
+    where: str,
+    rtol: float = 1e-5,
+    atol: float = 1e-6,
+) -> None:
+    """Two backends rank the same, up to ties float32 cannot resolve.
+
+    Comparing accession lists element by element asks float32 to order numbers it
+    cannot distinguish. On the fixture corpus, query 44 puts P00314 at 222.10226440
+    under numpy and P00142 at 222.10224915 under torch: a relative difference of
+    6.9e-8, below float32's own epsilon of about 1.2e-7. Which of the two comes
+    sixth is decided by summation order, not by the data, and demanding one of the
+    two answers makes a passing test a statement about the accumulation order of
+    whichever backend was written first.
+
+    So: the distance sequences must agree within tolerance, and an accession must
+    match wherever the distance at that position is separated from its neighbours
+    by more than the tolerance. Where it is not, either order is correct and the
+    test says so instead of picking.
+    """
+    np_d = [d for _, d in np_hits]
+    t_d = [d for _, d in t_hits]
+    np.testing.assert_allclose(t_d, np_d, rtol=rtol, atol=atol, err_msg=f"{where}: distances diverge")
+
+    def tie_group(dists: list[float], i: int) -> set[int]:
+        """Positions whose distance is indistinguishable from position ``i``."""
+        return {
+            j
+            for j in range(len(dists))
+            if abs(dists[j] - dists[i]) <= atol + rtol * abs(dists[i])
+        }
+
+    for i, (np_acc, t_acc) in enumerate(zip([a for a, _ in np_hits], [a for a, _ in t_hits], strict=True)):
+        if np_acc == t_acc:
+            continue
+        group = tie_group(np_d, i)
+        assert len(group) > 1, f"{where}: position {i} differs and is not a tie ({np_acc} vs {t_acc})"
+        # Within a tie group the two backends must still return the same set,
+        # only in a different order. A genuinely wrong neighbour is still caught.
+        assert {np_hits[j][0] for j in group} == {t_hits[j][0] for j in group}, (
+            f"{where}: position {i} differs and the tied set differs too"
+        )
+
+
 def test_torch_l2_matches_numpy(
     corpus: tuple[np.ndarray, np.ndarray, list[str]],
 ) -> None:
@@ -79,15 +125,7 @@ def test_torch_l2_matches_numpy(
     t_results = search_knn(queries, refs, accessions, k=k, backend="torch", metric="l2")
 
     for q_i, (np_hits, t_hits) in enumerate(zip(np_results, t_results, strict=True)):
-        np_accs = [a for a, _ in np_hits]
-        t_accs = [a for a, _ in t_hits]
-        assert np_accs == t_accs, f"query {q_i}: L2 accessions differ"
-        np_dists = np.array([d for _, d in np_hits])
-        t_dists = np.array([d for _, d in t_hits])
-        np.testing.assert_allclose(
-            t_dists, np_dists, rtol=1e-5, atol=1e-6,
-            err_msg=f"query {q_i}: L2 distances diverge",
-        )
+        assert_same_ranking(np_hits, t_hits, f"query {q_i} L2")
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +368,4 @@ def test_torch_l2_on_cuda(
     np_results = search_knn(queries, refs, accessions, k=k, backend="numpy", metric="l2")
     t_results = search_knn(queries, refs, accessions, k=k, backend="torch", metric="l2")
     for q_i, (np_hits, t_hits) in enumerate(zip(np_results, t_results, strict=True)):
-        np_accs = [a for a, _ in np_hits]
-        t_accs = [a for a, _ in t_hits]
-        assert np_accs == t_accs, f"CUDA L2 query {q_i}: accessions differ"
+        assert_same_ranking(np_hits, t_hits, f"CUDA L2 query {q_i}")
