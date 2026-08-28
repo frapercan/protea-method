@@ -70,8 +70,7 @@ def _rows(sequence_keys: dict[str, str] | None) -> list[dict[str, Any]]:
         annotations=annotations,
         go_id_map={7: "GO:0000007", 9: "GO:0000009"},
         go_aspect_map={7: "F", 9: "F"},
-        config=PredictConfig(k=3, compute_v6_features=False),
-        sequence_keys=sequence_keys,
+        config=PredictConfig(k=3, compute_v6_features=False, sequence_keys=sequence_keys),
     )
     assert isinstance(out, list)
     return out

@@ -97,6 +97,15 @@ class PredictConfig:
         ``PredictionSet`` row id. When given it is copied onto every
         emitted row so the lab dump and the live pipeline produce
         identical schemas.
+    sequence_keys:
+        Accession to sequence identity for the reference bank. When
+        given, every row carries a ``sequence_rank`` numbering its
+        query's neighbour list by distinct sequence rather than by
+        protein, so a cut at depth d admits d sequences. Forwarded
+        here rather than as a kwarg, as ``prediction_set_id`` is, to
+        keep ``predict``'s signature from growing further. A neighbour
+        absent from the map raises; the whole map absent leaves the
+        column empty on every row.
     """
 
     k: int = 5
@@ -108,6 +117,7 @@ class PredictConfig:
     compute_taxonomy: bool = False
     pre_normalized: bool = False
     prediction_set_id: str | None = None
+    sequence_keys: Mapping[str, str] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -278,7 +288,9 @@ def _tally_query_votes(
             continue
         top = neighbors_per_query[q_idx]
         seq_ranks = (
-            dense_sequence_ranks(top, sequence_keys) if sequence_keys is not None else None
+            dense_sequence_ranks(top, sequence_keys)
+            if sequence_keys is not None
+            else None
         )
         for k_pos, (ref_acc, distance) in enumerate(top, start=1):
             d = float(distance)
@@ -408,7 +420,6 @@ def _build_row_context(
     go_id_map: dict[int, str],
     go_aspect_map: dict[int, str],
     pair_features: dict[tuple[str, str], dict[str, Any]] | None,
-    sequence_keys: Mapping[str, str] | None = None,
 ) -> _RowContext:
     """Assemble the static row context for one ``predict`` invocation."""
     go_term_freq, ref_ann_density = _annotation_aggregates(annotations)
@@ -420,7 +431,7 @@ def _build_row_context(
         pair_features=pair_features or {},
         k_div=float(max(1, cfg.k)),
         prediction_set_id=cfg.prediction_set_id,
-        sequence_keys=sequence_keys,
+        sequence_keys=cfg.sequence_keys,
     )
 
 
@@ -533,7 +544,6 @@ def predict(
     boosters_by_aspect: dict[str, lgb.Booster] | None = ...,
     reranker_feature_cols: list[str] | None = ...,
     anc_idx: Anc2VecIndex | None = ...,
-    sequence_keys: Mapping[str, str] | None = ...,
     return_diagnostics: Literal[False] = False,
 ) -> list[dict[str, Any]]: ...
 
@@ -555,7 +565,6 @@ def predict(
     boosters_by_aspect: dict[str, lgb.Booster] | None = ...,
     reranker_feature_cols: list[str] | None = ...,
     anc_idx: Anc2VecIndex | None = ...,
-    sequence_keys: Mapping[str, str] | None = ...,
     return_diagnostics: Literal[True],
 ) -> tuple[list[dict[str, Any]], PredictDiagnostics]: ...
 
@@ -576,7 +585,6 @@ def predict(
     boosters_by_aspect: dict[str, lgb.Booster] | None = None,
     reranker_feature_cols: list[str] | None = None,
     anc_idx: Anc2VecIndex | None = None,
-    sequence_keys: Mapping[str, str] | None = None,
     return_diagnostics: bool = False,
 ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], PredictDiagnostics]:
     """End-to-end inference. See module docstring for the row shape.
@@ -644,7 +652,6 @@ def predict(
         go_id_map=go_id_map,
         go_aspect_map=go_aspect_map,
         pair_features=pair_features,
-        sequence_keys=sequence_keys,
     )
     predictions = _accumulate_votes(
         query_accessions=query_accessions,
