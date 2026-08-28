@@ -23,6 +23,14 @@ downstream LightGBM booster.
   `reranker.predict` and `reranker.apply_reranker` into a single
   `_calibrate_scores` helper.
 - Aligned the packaged version to the latest release tag.
+- Repin `protea-contracts` to `74d329ff`, which adds `extra="forbid"` to the
+  base `ProteaPayload` and the `exclude_self_neighbour` field on the retrieval
+  payloads. Poetry cannot resolve two revisions of one git dependency, so the
+  old pin here held the whole sibling set back and blocked the campaign that
+  needs the new field. Nothing in this package constructs or validates a
+  `ProteaPayload` subclass, so the stricter base class has no effect on it: the
+  only symbols imported from the contracts are the feature-schema constants,
+  and those are byte-identical across the two revisions.
 
 ### Removed
 - Unused `_ensure_text_stream` helper (and its `io` import) from
