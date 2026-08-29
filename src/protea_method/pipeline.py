@@ -157,10 +157,25 @@ class PredictDiagnostics:
     go_map_by_aspect:
         Per-aspect ``ref_acc -> annotation list`` map for every
         neighbour seen in ``neighbors_by_aspect``. Same key shape.
+    pair_feature_misses:
+        Every ``(query, donor)`` pair that a row asked ``pair_features``
+        for and did not find. Empty when the caller passed no
+        ``pair_features`` at all, because then nothing was asked.
+
+        This is not bookkeeping. A caller that computes ``pair_features``
+        from its own neighbour search, and lets ``predict`` run its own,
+        is relying on the two agreeing. They agree almost always and not
+        exactly: two searches over differently sliced float arrays
+        disagree at the 1e-7 level, so wherever the k-th distance is a
+        tie they can keep different donors. The rows for those donors
+        came out with every pair-feature column NULL and said nothing,
+        which is how 76 rows of a 2.4 million row run went unexplained
+        for a day.
     """
 
     neighbors_by_aspect: dict[str, list[list[tuple[str, float]]]]
     go_map_by_aspect: dict[str, dict[str, list[dict[str, Any]]]]
+    pair_feature_misses: frozenset[tuple[str, str]] = frozenset()
 
 
 def _annotation_aggregates(
@@ -282,6 +297,12 @@ class _RowContext:
     k_div: float
     prediction_set_id: str | None
     sequence_keys: Mapping[str, str] | None = None
+    #: Every ``(query, donor)`` a row asked for and did not find. A missing key
+    #: and a computed-empty result used to be the same thing here, so a row
+    #: emitted with fifteen NULL pair-feature columns was indistinguishable
+    #: from a row whose features were genuinely uncomputable, and the caller
+    #: was told nothing either way. Recording them costs one set.
+    pair_feature_misses: set[tuple[str, str]] = field(default_factory=set)
 
 
 def _make_row(
@@ -329,9 +350,15 @@ def _make_row(
         row["go_id"] = go_id
     if ctx.prediction_set_id is not None:
         row["prediction_set_id"] = ctx.prediction_set_id
-    pf = ctx.pair_features.get((q_acc, donor_ref), {})
+    key = (q_acc, donor_ref)
+    pf = ctx.pair_features.get(key)
     if pf:
         _propagate_pair_features(row, pf)
+    elif pf is None and ctx.pair_features:
+        # Absent, not empty. An empty dict is a computed answer ("this pair has
+        # no features"), a missing key is a question nobody asked, and the two
+        # produce the same row. Only the second is recorded.
+        ctx.pair_feature_misses.add(key)
     return row
 
 
@@ -637,6 +664,7 @@ def predict(
         diagnostics = PredictDiagnostics(
             neighbors_by_aspect=neighbors_by_aspect,
             go_map_by_aspect=go_map_by_aspect,
+            pair_feature_misses=frozenset(row_ctx.pair_feature_misses),
         )
         return predictions, diagnostics
     return predictions
