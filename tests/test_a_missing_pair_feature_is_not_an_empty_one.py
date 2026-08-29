@@ -26,7 +26,7 @@ from typing import Any
 
 import numpy as np
 
-from protea_method.pipeline import PredictConfig, predict
+from protea_method.pipeline import PredictConfig, PredictDiagnostics, predict
 
 GO_ID_MAP = {1: "GO:0000001", 2: "GO:0000002"}
 GO_ASPECT_MAP = {1: "F", 2: "P"}
@@ -49,7 +49,9 @@ def _corpus() -> tuple[list[str], np.ndarray, list[str], np.ndarray, dict[str, A
     )
 
 
-def _run(pair_features: dict[tuple[str, str], dict[str, Any]] | None):
+def _run(
+    pair_features: dict[tuple[str, str], dict[str, Any]] | None,
+) -> tuple[list[dict[str, Any]], PredictDiagnostics]:
     qa, qe, ra, re_, anns = _corpus()
     return predict(
         query_accessions=qa,
