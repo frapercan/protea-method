@@ -125,7 +125,7 @@ def _train_aspect_booster(rng_seed: int) -> lgb.Booster:
 
 def test_aspect_separated_partitions_into_three_banks() -> None:
     """``_partition_refs_by_aspect`` produces one bank per aspect code."""
-    from protea_method.pipeline import _partition_refs_by_aspect
+    from protea_method._knn_step import _partition_refs_by_aspect
 
     _, _, ref_accessions, ref_embeddings, annotations, _, go_aspect_map = (
         _aspect_balanced_corpus()
@@ -149,9 +149,11 @@ def test_aspect_separated_partitions_into_three_banks() -> None:
 def test_aspect_separated_invokes_search_knn_once_per_aspect() -> None:
     """The orchestrator calls ``search_knn`` exactly three times: F / P / C."""
     qa, qe, ra, re_, anns, gid_map, gasp_map = _aspect_balanced_corpus()
+    # The search moved out of the orchestrator into _knn_step, where the two
+    # shapes of it now sit together, so the spy follows it there.
     with patch(
-        "protea_method.pipeline.search_knn",
-        wraps=__import__("protea_method.pipeline", fromlist=["search_knn"]).search_knn,
+        "protea_method._knn_step.search_knn",
+        wraps=__import__("protea_method._knn_step", fromlist=["search_knn"]).search_knn,
     ) as spy:
         predict(
             query_accessions=qa,

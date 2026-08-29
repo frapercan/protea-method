@@ -305,7 +305,7 @@ def test_predict_aspect_separated_runs_three_knns(tmp_path: Path) -> None:
 
 def test_partition_refs_by_aspect_filters_correctly(tmp_path: Path) -> None:
     """A reference with only F annotations belongs only to the F bank."""
-    from protea_method.pipeline import _partition_refs_by_aspect
+    from protea_method._knn_step import _partition_refs_by_aspect
 
     refs = ["A", "B", "C"]
     embeddings = np.eye(3, 4, dtype=np.float32)
