@@ -353,7 +353,7 @@ def _make_row(
     key = (q_acc, donor_ref)
     pf = ctx.pair_features.get(key)
     if pf:
-        _propagate_pair_features(row, pf)
+        propagate_pair_features(row, pf)
     elif pf is None and ctx.pair_features:
         # Absent, not empty. An empty dict is a computed answer ("this pair has
         # no features"), a missing key is a question nobody asked, and the two
@@ -416,7 +416,7 @@ def _build_row_context(
     )
 
 
-_PAIR_FEATURE_KEYS: tuple[str, ...] = (
+PAIR_FEATURE_KEYS: tuple[str, ...] = (
     "identity_nw",
     "similarity_nw",
     "alignment_score_nw",
@@ -435,13 +435,23 @@ _PAIR_FEATURE_KEYS: tuple[str, ...] = (
 )
 
 
-def _propagate_pair_features(
+def propagate_pair_features(
     row: dict[str, Any], pf: dict[str, Any],
 ) -> None:
-    """Copy the alignment / taxonomy fields the lab schema expects."""
-    for key in _PAIR_FEATURE_KEYS:
+    """Copy the alignment / taxonomy fields the lab schema expects.
+
+    Public because a caller whose own neighbour search disagreed with this
+    one has to be able to repair those rows afterwards, and a caller that
+    reimplemented this would carry a second copy of PAIR_FEATURE_KEYS. Two
+    copies of a field list is how a field comes to be added to one of them.
+    """
+    for key in PAIR_FEATURE_KEYS:
         if key in pf:
             row[key] = pf[key]
+
+
+#: Kept so nothing importing the private spelling breaks on this release.
+_propagate_pair_features = propagate_pair_features
 
 
 def load_boosters_by_aspect(directory: str | Path) -> dict[str, lgb.Booster]:
