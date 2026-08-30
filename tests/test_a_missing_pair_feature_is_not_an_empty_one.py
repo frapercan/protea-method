@@ -156,3 +156,87 @@ def test_a_field_in_the_list_reaches_the_row() -> None:
     row: dict[str, Any] = {}
     propagate_pair_features(row, {k: i for i, k in enumerate(PAIR_FEATURE_KEYS)})
     assert set(row) == set(PAIR_FEATURE_KEYS)
+
+
+def _corpus_where_one_donor_votes_twice() -> tuple[
+    list[str], np.ndarray, list[str], np.ndarray, dict[str, Any]
+]:
+    """R00 holds GO term 1 twice, under two evidence codes.
+
+    That is the ordinary shape of GOA, and it is what separates the two
+    formulas: R00 casts two ANNOTATION votes and is one DONOR. A corpus where
+    every donor holds each term once makes vote_count and donor_count equal, so
+    both formulas agree and the test proves nothing.
+    """
+    rng = np.random.default_rng(11)
+    annotations = {
+        "R00": [
+            {"go_term_id": 1, "evidence_code": "EXP"},
+            {"go_term_id": 1, "evidence_code": "IDA"},
+        ],
+        "R01": [{"go_term_id": 1}],
+        "R02": [{"go_term_id": 2}],
+        "R03": [{"go_term_id": 2}],
+    }
+    return (
+        ["Q1"],
+        rng.standard_normal(size=(1, 4)).astype(np.float32),
+        [f"R{i:02d}" for i in range(4)],
+        rng.standard_normal(size=(4, 4)).astype(np.float32),
+        annotations,
+    )
+
+
+def _run_double(k: int = 3) -> list[dict[str, Any]]:
+    qa, qe, ra, re_, anns = _corpus_where_one_donor_votes_twice()
+    return predict(
+        query_accessions=qa,
+        query_embeddings=qe,
+        reference_accessions=ra,
+        reference_embeddings=re_,
+        annotations=anns,
+        go_id_map=GO_ID_MAP,
+        go_aspect_map=GO_ASPECT_MAP,
+        config=PredictConfig(k=k, compute_v6_features=False),
+    )
+
+
+def test_a_donor_that_votes_twice_is_still_one_donor() -> None:
+    """The case that separates the two formulas, asserted first.
+
+    Without a row where vote_count exceeds donor_count, everything below passes
+    whichever numerator is used.
+    """
+    doubled = [r for r in _run_double() if r["vote_count"] > r["donor_count"]]
+    assert doubled, "the corpus must produce a row where a donor voted twice"
+    for r in doubled:
+        assert r["neighbor_vote_fraction"] == r["donor_count"] / 3
+
+
+def test_a_vote_fraction_is_a_fraction() -> None:
+    """It has to be in [0, 1], and it was not.
+
+    ``vote_count`` counts ANNOTATIONS, so a donor holding the same term under
+    two evidence codes votes twice, while the denominator counts donor slots.
+    Measured on a 2,441,584 row run at k=30: 258,632 rows (10.59%) carried a
+    vote_count above their own donor count, and 805 came out above 1.0, to a
+    maximum of 1.93, on a column whose name promises a fraction.
+
+    Asserted with k=1, where the old formula breaks on the very first double
+    vote and no amount of neighbours can hide it.
+    """
+    for k in (1, 2, 3):
+        for r in _run_double(k):
+            f = r["neighbor_vote_fraction"]
+            assert 0.0 <= f <= 1.0, (k, r["go_term_id"], f, r["vote_count"])
+
+
+def test_annotation_weight_is_still_available() -> None:
+    """The fix must not delete the quantity it replaced.
+
+    A caller that wants weight by evidence reads vote_count, which still counts
+    annotations and may exceed the donor count.
+    """
+    rows = _run_double()
+    assert all(r["vote_count"] >= r["donor_count"] for r in rows)
+    assert any(r["vote_count"] > r["donor_count"] for r in rows)

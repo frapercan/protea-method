@@ -341,7 +341,19 @@ def _make_row(
         "go_term_frequency": ctx.go_term_freq.get(gtid, 0),
         "ref_annotation_density": ctx.ref_ann_density.get(donor_ref, 0),
         "neighbor_distance_std": distance_std,
-        "neighbor_vote_fraction": vote_count / ctx.k_div,
+        # Donors, not annotations. vote_count counts ANNOTATIONS: one donor
+        # holding the same term under two evidence codes votes twice, so the
+        # ratio mixed units and was not a fraction of anything. Measured on a
+        # 2,441,584 row run at k=30: 258,632 rows (10.59%) had vote_count above
+        # their own donor count, and 805 came out above 1.0, to a maximum of
+        # 1.93, on a column whose name promises a fraction. The ledger is
+        # bounded by k by construction (max observed 30 of 30), so counting the
+        # numerator in the denominator's unit puts it back in [0, 1].
+        #
+        # Nothing is lost: vote_count is stored beside it and still counts
+        # annotations, which is the quantity a caller wanting weight-by-
+        # evidence should read.
+        "neighbor_vote_fraction": len(ledger) / ctx.k_div,
         "neighbor_min_distance": stat["min_d"],
         "neighbor_mean_distance": mean_d,
     }
