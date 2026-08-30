@@ -115,3 +115,44 @@ def test_a_complete_map_reports_no_miss() -> None:
     rows, diag = _run(complete)
     assert diag.pair_feature_misses == frozenset()
     assert all(r.get("identity_nw") == 0.9 for r in rows)
+
+
+def test_the_field_list_carries_the_taxonomy_a_caller_computes() -> None:
+    """Three fields were computed, paid for, and dropped in silence.
+
+    PAIR_FEATURE_KEYS is the only gate between what a caller computes and what
+    reaches its database, and it omitted taxonomic_lca and the two taxonomy ids
+    that PROTEA's adapter sets beside them. The three sibling taxonomy columns
+    were filled on the same rows, so nothing looked wrong: 0 non-null values in
+    7,082,480 rows across every prediction set that exists.
+
+    Named one by one rather than counted, because a count passes when a field
+    is swapped for another.
+    """
+    from protea_method.pipeline import PAIR_FEATURE_KEYS
+
+    for field in (
+        "taxonomic_lca",
+        "taxonomic_distance",
+        "taxonomic_common_ancestors",
+        "taxonomic_relation",
+        "query_taxonomy_id",
+        "ref_taxonomy_id",
+    ):
+        assert field in PAIR_FEATURE_KEYS, field
+
+
+def test_the_list_has_no_duplicates() -> None:
+    """A duplicate would hide a rename: the old and new name both present."""
+    from protea_method.pipeline import PAIR_FEATURE_KEYS
+
+    assert len(PAIR_FEATURE_KEYS) == len(set(PAIR_FEATURE_KEYS))
+
+
+def test_a_field_in_the_list_reaches_the_row() -> None:
+    """The list is only a promise until something copies by it."""
+    from protea_method.pipeline import PAIR_FEATURE_KEYS, propagate_pair_features
+
+    row: dict[str, Any] = {}
+    propagate_pair_features(row, {k: i for i, k in enumerate(PAIR_FEATURE_KEYS)})
+    assert set(row) == set(PAIR_FEATURE_KEYS)
