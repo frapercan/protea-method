@@ -305,6 +305,28 @@ class _RowContext:
     pair_feature_misses: set[tuple[str, str]] = field(default_factory=set)
 
 
+def _vote_fraction(ledger: DonorLedger, k_div: float) -> float:
+    """The share of the neighbourhood that voted, in [0, 1].
+
+    DONORS, NOT ANNOTATIONS. This used to be ``vote_count / k``, and
+    ``vote_count`` counts annotations: a donor holding the same GO term under
+    two evidence codes votes twice, which is the ordinary shape of GOA. The
+    denominator counts donor slots, so the ratio mixed units and was not a
+    fraction of anything.
+
+    Measured on a 2,441,584 row run at k=30: 258,632 rows (10.59%) carried a
+    vote_count above their own donor count, and 805 came out above 1.0, to a
+    maximum of 1.93, on a column whose name promises a fraction. Nothing had
+    ever checked its range.
+
+    The ledger is bounded by k by construction (max observed 30 of 30), so
+    counting the numerator in the denominator's unit puts the value back in
+    range. Nothing is lost: ``vote_count`` is stored beside it and still counts
+    annotations, which is what a caller wanting weight by evidence should read.
+    """
+    return len(ledger) / k_div
+
+
 def _make_row(
     q_acc: str,
     gtid: int,
@@ -341,7 +363,7 @@ def _make_row(
         "go_term_frequency": ctx.go_term_freq.get(gtid, 0),
         "ref_annotation_density": ctx.ref_ann_density.get(donor_ref, 0),
         "neighbor_distance_std": distance_std,
-        "neighbor_vote_fraction": vote_count / ctx.k_div,
+        "neighbor_vote_fraction": _vote_fraction(ledger, ctx.k_div),
         "neighbor_min_distance": stat["min_d"],
         "neighbor_mean_distance": mean_d,
     }
