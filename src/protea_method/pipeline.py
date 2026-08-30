@@ -416,6 +416,15 @@ def _build_row_context(
     )
 
 
+#: The pair-feature fields copied onto a row. This list is the ONLY gate
+#: between what a caller computes and what reaches the database, so a field a
+#: caller emits and this omits is computed, paid for, and thrown away in
+#: silence. That happened to three of them: PROTEA's compute_taxonomy returns
+#: taxonomic_lca and its adapter sets query_taxonomy_id and ref_taxonomy_id,
+#: all three name real columns, and all three were absent here. The result was
+#: 0 non-null values in 7,082,480 rows across every prediction set that
+#: exists, on runs where compute_taxonomy was switched on and its three
+#: sibling columns were filled.
 PAIR_FEATURE_KEYS: tuple[str, ...] = (
     "identity_nw",
     "similarity_nw",
@@ -432,6 +441,12 @@ PAIR_FEATURE_KEYS: tuple[str, ...] = (
     "taxonomic_distance",
     "taxonomic_common_ancestors",
     "taxonomic_relation",
+    "taxonomic_lca",
+    # The two inputs the taxonomy was computed from. On the row they let a
+    # reader check the answer without a join, and their absence is why nobody
+    # could see that the answer was missing.
+    "query_taxonomy_id",
+    "ref_taxonomy_id",
 )
 
 
