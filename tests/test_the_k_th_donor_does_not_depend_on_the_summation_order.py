@@ -154,7 +154,7 @@ class TestTheUncoveredBackendsSayThatTheyAre:
     """
 
     def test_the_covered_set_names_numpy_and_only_numpy(self) -> None:
-        from protea_method.knn_search import ORDER_INVARIANT_BACKENDS
+        from protea_method._order_invariance import ORDER_INVARIANT_BACKENDS
 
         assert ORDER_INVARIANT_BACKENDS == frozenset({"numpy"}), (
             "the covered set changed; if a backend gained float64 accumulation "
@@ -180,9 +180,10 @@ class TestTheUncoveredBackendsSayThatTheyAre:
 
         import numpy as np
 
+        import protea_method._order_invariance as oi
         import protea_method.knn_search as ks
 
-        ks._WARNED_NON_INVARIANT.clear()
+        oi._WARNED_NON_INVARIANT.clear()
         Q = np.zeros((2, 4), dtype=np.float32)
         R = np.eye(4, dtype=np.float32)
         seen = []
@@ -194,7 +195,7 @@ class TestTheUncoveredBackendsSayThatTheyAre:
                 except Exception:
                     pass
                 seen += [c for c in caught if issubclass(c.category, RuntimeWarning)]
-        ks._WARNED_NON_INVARIANT.clear()
+        oi._WARNED_NON_INVARIANT.clear()
         assert len(seen) == 1, "once per process, not once per batch"
         assert "reduction order" in str(seen[0].message)
 

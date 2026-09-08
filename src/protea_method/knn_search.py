@@ -60,12 +60,16 @@ from __future__ import annotations
 
 import logging
 import os
-import warnings
 from typing import Any
 
 import numpy as np
 
 from protea_method._chunked_topk import TorchSearch, chunked_topk
+from protea_method._order_invariance import (
+    cosine_distance_f64,
+    l2_distance_f64,
+    warn_if_order_dependent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,44 +105,6 @@ def _check_alignment(
             f"misaligns every query after the gap; refusing to return."
         )
 
-
-#: Backends whose k-th neighbour does not depend on the order the machine
-#: reduces in. Only ``numpy`` accumulates in float64 (see
-#: ``_cosine_distance_f64``); ``torch`` reduces on the device with its own
-#: partitioning, and ``faiss`` searches a float32 index this package does not
-#: build. Naming the covered set rather than fixing one path and staying quiet
-#: is deliberate: every prediction set stored to date used ``numpy``, but
-#: ``search_backend`` DEFAULTS to ``faiss`` in five export and training
-#: payloads, so the uncovered path is the one a dataset export or a reranker
-#: run falls into without anybody choosing it -- and the reranker is precisely
-#: where donor identity becomes a feature and the ulp noise would be read as
-#: signal.
-ORDER_INVARIANT_BACKENDS = frozenset({"numpy"})
-
-#: Warned once per process; a per-call warning would drown a batch log.
-_WARNED_NON_INVARIANT: set[str] = set()
-
-
-def _warn_if_order_dependent(backend: str) -> None:
-    """Say so when the selection about to run is not reduction-order invariant.
-
-    A warning and not a refusal, because ``faiss`` and ``torch`` are legitimate
-    choices for work that does not compare runs. What is not legitimate is
-    NOT KNOWING: the defect this guards was invisible for weeks because a
-    prediction set records no such thing, and was found only when the same cell
-    was recomputed for an unrelated reason.
-    """
-    if backend in ORDER_INVARIANT_BACKENDS or backend in _WARNED_NON_INVARIANT:
-        return
-    _WARNED_NON_INVARIANT.add(backend)
-    warnings.warn(
-        f"search backend {backend!r} selects the k-th neighbour with float32 "
-        "arithmetic whose reduction order depends on the CPU and the thread "
-        "count, so two machines can disagree about which donor is admitted at "
-        f"a tie. Invariant backends: {sorted(ORDER_INVARIANT_BACKENDS)}.",
-        RuntimeWarning,
-        stacklevel=3,
-    )
 
 
 def search_knn(
@@ -230,64 +196,9 @@ def search_knn(
         raise ValueError(
             f"Unknown search backend: {backend!r}. Choose 'numpy', 'faiss', 'torch', or 'sparse'."
         )
-
-    _warn_if_order_dependent(backend)
-
+    warn_if_order_dependent(backend)
     _check_alignment(hits, query_embeddings.shape[0], backend)
     return hits
-
-
-#: Reference vectors promoted to float64 per block. The block bounds memory:
-#: a 528k-vector bank at 1024 dims is 2.2 GB in float32 and 4.3 GB in float64,
-#: so promoting the whole bank at once is not an option. Blocking over
-#: REFERENCES splits no accumulation -- each distance is one dot product over
-#: the dim axis -- so the result is exactly the unblocked float64 result.
-_REF_BLOCK = 50_000
-
-
-def _cosine_distance_f64(Q_n: np.ndarray, R_ready: np.ndarray) -> np.ndarray:
-    """``1 - Q@R.T`` accumulated in float64, returned in float32.
-
-    WHY. In float32 the answer depends on the ORDER OpenBLAS reduces in, and
-    that order is chosen at runtime from the CPU and the thread count. Measured
-    on 2026-09-08 across two machines: the same bank and the same code gave
-    four different results for four thread counts, and where the k-th distance
-    ties, a one-ulp change swaps which donor is admitted. The observed spread
-    reached 13 float32 ulps, 7.75e-7.
-
-    Rounding the distance to a grid was tried and rejected: it is a probability
-    reduction dressed as an invariant, its bucket edges are arbitrary, and its
-    residual moves whenever the noise moves. Accumulating in float64 leaves a
-    spread near 1e-16, far below the ~6e-8 float32 resolution, so the downcast
-    erases it ALWAYS rather than usually.
-
-    Measured cost: x2.4 to x3.0 on the matmul, and it does NOT recover with
-    more threads -- 8 to 12 threads moved float32 from 1.44s to 1.33s and
-    float64 from 4.00s to 3.96s. The penalty is bandwidth-bound and structural;
-    the lever is the block size or the precision, never the parallelism.
-    """
-    out = np.empty((Q_n.shape[0], R_ready.shape[0]), dtype=np.float32)
-    Q64 = Q_n.astype(np.float64)
-    for s in range(0, R_ready.shape[0], _REF_BLOCK):
-        blk = R_ready[s : s + _REF_BLOCK].astype(np.float64)
-        out[:, s : s + blk.shape[0]] = (1.0 - (Q64 @ blk.T)).astype(np.float32)
-    return out
-
-
-def _l2_distance_f64(Q_chunk: np.ndarray, R_ready: np.ndarray, R2: np.ndarray) -> np.ndarray:
-    """Squared euclidean via the expanded form, accumulated in float64.
-
-    Same argument as the cosine case; kept separate because the expansion has
-    its own cancellation and clamping near zero.
-    """
-    out = np.empty((Q_chunk.shape[0], R_ready.shape[0]), dtype=np.float32)
-    Q64 = Q_chunk.astype(np.float64)
-    Q2 = (Q64**2).sum(axis=1, keepdims=True)
-    for s in range(0, R_ready.shape[0], _REF_BLOCK):
-        blk = R_ready[s : s + _REF_BLOCK].astype(np.float64)
-        d = Q2 + R2[s : s + blk.shape[0]].astype(np.float64) - 2.0 * (Q64 @ blk.T)
-        out[:, s : s + blk.shape[0]] = np.maximum(0.0, d).astype(np.float32)
-    return out
 
 
 def _search_numpy(
@@ -334,9 +245,9 @@ def _search_numpy(
         Q_chunk = Q[start : start + query_chunk]
         if metric == "cosine":
             Q_n = Q_chunk / (np.linalg.norm(Q_chunk, axis=1, keepdims=True) + 1e-9)
-            dist = _cosine_distance_f64(Q_n, R_ready)
+            dist = cosine_distance_f64(Q_n, R_ready)
         else:  # l2
-            dist = _l2_distance_f64(Q_chunk, R_ready, R2)
+            dist = l2_distance_f64(Q_chunk, R_ready, R2)
 
         n_rows = dist.shape[0]
         if k_eff < n_refs:
