@@ -65,6 +65,11 @@ from typing import Any
 import numpy as np
 
 from protea_method._chunked_topk import TorchSearch, chunked_topk
+from protea_method._order_invariance import (
+    cosine_distance_f64,
+    l2_distance_f64,
+    warn_if_order_dependent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +104,7 @@ def _check_alignment(
             f"{n_queries:,} queries. Results are positional, so a mismatch "
             f"misaligns every query after the gap; refusing to return."
         )
+
 
 
 def search_knn(
@@ -190,7 +196,7 @@ def search_knn(
         raise ValueError(
             f"Unknown search backend: {backend!r}. Choose 'numpy', 'faiss', 'torch', or 'sparse'."
         )
-
+    warn_if_order_dependent(backend)
     _check_alignment(hits, query_embeddings.shape[0], backend)
     return hits
 
@@ -228,7 +234,6 @@ def _search_numpy(
     else:
         raise ValueError(f"Unknown metric: {metric!r}. Choose 'cosine' or 'l2'.")
 
-    R_T = R_ready.T  # contiguous view; shared by all chunks
     n_refs = R.shape[0]
     k_eff = min(k, n_refs)
 
@@ -240,10 +245,9 @@ def _search_numpy(
         Q_chunk = Q[start : start + query_chunk]
         if metric == "cosine":
             Q_n = Q_chunk / (np.linalg.norm(Q_chunk, axis=1, keepdims=True) + 1e-9)
-            dist = 1.0 - (Q_n @ R_T)
+            dist = cosine_distance_f64(Q_n, R_ready)
         else:  # l2
-            Q2 = (Q_chunk**2).sum(axis=1, keepdims=True)
-            dist = np.maximum(0.0, Q2 + R2 - 2.0 * (Q_chunk @ R_T))
+            dist = l2_distance_f64(Q_chunk, R_ready, R2)
 
         n_rows = dist.shape[0]
         if k_eff < n_refs:
