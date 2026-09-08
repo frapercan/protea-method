@@ -209,3 +209,15 @@ class TestTheUncoveredBackendsSayThatTheyAre:
         with pt.raises(ValueError, match="Unknown search backend"):
             search_knn(np.zeros((1, 2), dtype=np.float32),
                        np.eye(2, dtype=np.float32), ["A", "B"], 1, backend="inventado")
+
+
+def test_the_l2_helper_refuses_a_missing_norm_rather_than_recomputing_it() -> None:
+    """Recomputing would hide a caller bug and pay for it once per chunk."""
+    import numpy as np
+    import pytest as pt
+
+    from protea_method._order_invariance import l2_distance_f64
+
+    with pt.raises(ValueError, match="precomputed"):
+        l2_distance_f64(np.zeros((1, 3), dtype=np.float32),
+                        np.eye(3, dtype=np.float32), None)

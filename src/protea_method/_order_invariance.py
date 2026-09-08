@@ -62,12 +62,25 @@ def cosine_distance_f64(Q_n: np.ndarray, R_ready: np.ndarray) -> np.ndarray:
     return out
 
 
-def l2_distance_f64(Q_chunk: np.ndarray, R_ready: np.ndarray, R2: np.ndarray) -> np.ndarray:
+def l2_distance_f64(
+    Q_chunk: np.ndarray, R_ready: np.ndarray, R2: np.ndarray | None
+) -> np.ndarray:
     """Squared euclidean via the expanded form, accumulated in float64.
 
     Same argument as the cosine case; kept separate because the expansion has
     its own cancellation and clamping near zero.
+
+    ``R2`` is optional in the type because the caller computes it exactly when
+    the metric is l2 and leaves it None for cosine. Reaching here without it is
+    a caller bug, not a runtime condition, so it is refused by name rather than
+    recomputed silently -- recomputing would hide the mistake and pay for it
+    once per chunk.
     """
+    if R2 is None:
+        raise ValueError(
+            "l2_distance_f64 needs the precomputed ||R||^2; it is built once per "
+            "call alongside metric='l2' and must be passed through"
+        )
     out = np.empty((Q_chunk.shape[0], R_ready.shape[0]), dtype=np.float32)
     Q64 = Q_chunk.astype(np.float64)
     Q2 = (Q64**2).sum(axis=1, keepdims=True)
