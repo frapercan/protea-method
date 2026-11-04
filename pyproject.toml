@@ -27,7 +27,7 @@ classifiers = [
 python = ">=3.12,<4.0"
 # Hard rule: no FastAPI, no SQLAlchemy, no protea-core.
 # This is the slim shipping path for the inference method.
-"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", rev = "74d329ff22a77baa5142f477889dd6e2e2ca2a4f" }
+"protea-contracts" = { git = "https://github.com/frapercan/protea-contracts.git", rev = "dd335182a6624a82e3285df9d04a7ace3402effd" }
 numpy = ">=1.24"
 pandas = ">=2.0"
 lightgbm = ">=4.0"
@@ -44,7 +44,7 @@ torch = { version = ">=2.0,<3.0", optional = true }
 # the corresponding installs of this package.
 transformers = { version = ">=4.40", optional = true }
 sentencepiece = { version = ">=0.2", optional = true }
-protea-backends = { git = "https://github.com/frapercan/protea-backends.git", rev = "9b76719a14d729390be7d0faf957fae06a31ced5", optional = true }
+protea-backends = { git = "https://github.com/frapercan/protea-backends.git", rev = "5fec3f59453714fb18d31d3bd43a502ad244c5d7", optional = true }
 
 [tool.poetry.extras]
 # `pip install protea-method[mil]` enables the MIL head. CPU users
