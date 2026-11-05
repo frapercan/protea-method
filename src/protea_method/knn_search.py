@@ -201,6 +201,43 @@ def search_knn(
     return hits
 
 
+def _top_k_by_distance_then_position(dist: np.ndarray, k: int) -> list[np.ndarray]:
+    """The k nearest columns of each row, equal distances ordered by column.
+
+    WHY. ``np.argpartition`` followed by a quicksort ``argsort`` puts EQUAL
+    values in an order that comes from the partition's internal pivots, and
+    those depend on every other value in the row. Two runs of the same recipe
+    on a byte-identical bank (exploration 1, 2026-11-05) gave identical tied
+    distances in a different order, because some unrelated column of the row
+    moved by one float32 ulp between them, and 9.7 % of the stored rows
+    changed: which donor represents a term, its k position, and at the k-th
+    slot which donors are admitted at all. Ties are common, not a corner: 91
+    per cent of queries have neighbours at distance ~0, themselves or twins
+    carrying the same sequence.
+
+    So the k-th smallest distance is found first, every column at or below it
+    is a candidate, and the candidates are ordered by distance and then by
+    column position with a stable ``lexsort``. Which donors are chosen and in
+    what order then depends only on the candidates' own distances and
+    positions. The bank is ordered by accession (``COLLATE "C"``) and each
+    aspect's view keeps that order, so the position IS the accession: equal
+    distances are broken by accession, the same way on every run.
+    """
+    n_rows, n_cols = dist.shape
+    if k >= n_cols:
+        kth = dist.max(axis=1)
+    else:
+        kth = np.partition(dist, k - 1, axis=1)[:, k - 1]
+    out: list[np.ndarray] = []
+    for r in range(n_rows):
+        row = dist[r]
+        cand = np.flatnonzero(row <= kth[r])
+        # lexsort sorts by the LAST key first: distance, then column position.
+        order = np.lexsort((cand, row[cand]))
+        out.append(cand[order[:k]])
+    return out
+
+
 def _search_numpy(
     Q: np.ndarray,
     R: np.ndarray,
@@ -217,10 +254,10 @@ def _search_numpy(
     and the transposed ``R.T`` view) is computed once and reused across
     chunks.
 
-    Top-k selection uses ``np.argpartition`` (O(n_refs) per query)
-    followed by a partial sort of the k-slice, instead of a full
-    ``argsort`` -- for k << n_refs this is ~30x faster on 500k-vector
-    banks.
+    Top-k selection finds the k-th distance with ``np.partition`` (O(n_refs)
+    per query) and orders only the candidates at or below it, by distance and
+    then by column position; see :func:`_top_k_by_distance_then_position` for
+    why the order of equal distances has to be fixed explicitly.
     """
     if metric == "cosine":
         if pre_normalized:
@@ -250,14 +287,7 @@ def _search_numpy(
             dist = l2_distance_f64(Q_chunk, R_ready, R2)
 
         n_rows = dist.shape[0]
-        if k_eff < n_refs:
-            part = np.argpartition(dist, k_eff - 1, axis=1)[:, :k_eff]
-            row_range = np.arange(n_rows)[:, None]
-            part_d = dist[row_range, part]
-            sort_in_part = np.argsort(part_d, axis=1)
-            top_per_row = part[row_range, sort_in_part]
-        else:
-            top_per_row = np.argsort(dist, axis=1)[:, :k_eff]
+        top_per_row = _top_k_by_distance_then_position(dist, k_eff)
 
         for row_i in range(n_rows):
             row = dist[row_i]

@@ -141,3 +141,37 @@ def test_search_knn_chunked_query_path(
     queries, refs, accessions = small_corpus
     results = search_knn(queries, refs, accessions, k=3, backend="numpy", metric="cosine")
     assert len(results) == 5
+
+
+def test_equal_distances_are_ordered_by_column_whatever_the_rest_of_the_row() -> None:
+    """Ties are broken by position, and moving unrelated values cannot reorder them.
+
+    Exploration 1 (2026-11-05) found the order of equal distances changing
+    between two runs on a byte-identical bank, because the old selection's
+    internal permutation depended on every other value of the row.
+    """
+    from protea_method.knn_search import _top_k_by_distance_then_position
+
+    rng = np.random.default_rng(0)
+    base = (rng.random(1000) + 1.0).astype(np.float32)
+    ties = [700, 13, 512, 99]
+    base[ties] = np.float32(0.25)
+    others = np.setdiff1d(np.arange(1000), ties)
+    for _ in range(25):
+        row = base.copy()
+        moved = rng.choice(others, size=60, replace=False)
+        row[moved] += rng.random(60).astype(np.float32)
+        top = _top_k_by_distance_then_position(row[None, :], 3)[0]
+        assert top.tolist() == [13, 99, 512]
+
+
+def test_twins_come_back_in_accession_order() -> None:
+    """References carrying the same vector tie exactly; the bank order decides."""
+    from protea_method.knn_search import _search_numpy
+
+    v = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+    other = np.array([[0.0, 1.0, 0.0]], dtype=np.float32)
+    R = np.vstack([other, v, other, v, v]).astype(np.float32)
+    accessions = ["A1", "B2", "C3", "D4", "E5"]
+    hits = _search_numpy(v, R, accessions, 3, distance_threshold=None, metric="cosine")
+    assert [acc for acc, _ in hits[0]] == ["B2", "D4", "E5"]
