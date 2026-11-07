@@ -112,6 +112,13 @@ class PredictConfig:
         and raises rather than passing a query it cannot recognise. The
         search asks for extra neighbours first, measured from the bank,
         so the drop does not cost depth.
+    self_exclusion:
+        The rule that removes the query from its own neighbourhood: "none",
+        "sequence" (the query and every twin) or "accession" (the query
+        only, its twins kept, for a consumer that reads the query's own
+        state as input; the author, 2026-11-07). Unset, the flag above
+        decides, as it always did. The search's extra margin follows the
+        same rule, so the drop never costs depth.
     sequence_keys:
         Accession to sequence identity for the reference bank. When
         given, every row carries a ``sequence_rank`` numbering its
@@ -134,6 +141,7 @@ class PredictConfig:
     prediction_set_id: str | None = None
     sequence_keys: Mapping[str, str] | None = None
     exclude_self_neighbour: bool = False
+    self_exclusion: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 
