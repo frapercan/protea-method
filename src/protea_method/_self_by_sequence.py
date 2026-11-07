@@ -18,6 +18,19 @@ assumption the accession-based version made. Counted here instead: the
 queries in this window have between zero and forty-five twins, and 94.4
 per cent have none, so a fixed margin is either too small for the tail or
 wasteful for almost everyone. The margin is measured from the bank.
+
+BY ACCESSION, WHERE THE CONSUMER ALREADY HOLDS THE QUERY'S OWN STATE. A model
+that reads the query's own annotations as input of its own (the single world
+model of 2026-11-07) does not need the query as a donor: there it would be a
+shortcut to copy itself. But its twins are other entries, annotated by others,
+and their annotations are evidence. The author chose, on 2026-11-07, to exclude
+the query by accession and keep its twins there. In the platform's corpus that
+is not a corner case: 162,640 of 684,048 accessions share their sequence with
+another, 54,153 sequences have twins, and the largest group holds 127. So the
+rule is a parameter, ``self_exclusion``: "none", "sequence" or "accession".
+Each rule has its own margin, and the margin and the drop must move together:
+mixing a by-sequence margin with a by-accession drop, or the reverse, once left
+887 donor holes in 264 of 14,032 queries.
 """
 
 from __future__ import annotations
@@ -32,11 +45,19 @@ if TYPE_CHECKING:
 
 from protea_method._sequence_depth import SequenceIdentityMissingError
 
+SELF_EXCLUSION_RULES = ("none", "sequence", "accession")
+
 __all__ = (
+    "SELF_EXCLUSION_RULES",
     "Queries",
     "drop_own_sequence",
+    "drop_self",
     "extra_neighbours_for",
+    "extra_neighbours_for_accession",
+    "resolve_self_exclusion",
+    "self_exclusion_margin",
     "self_margin",
+    "without_own_accession",
     "without_own_sequence",
 )
 
@@ -137,21 +158,96 @@ class Queries:
     embeddings: np.ndarray
 
 
-def self_margin(
+def resolve_self_exclusion(cfg: Any) -> str:
+    """The rule a configuration asks for: "none", "sequence" or "accession".
+
+    ``self_exclusion`` decides when it is set. When it is not, the older flag
+    keeps its meaning: ``exclude_self_neighbour`` True is "sequence", False is
+    "none", so every stored run reads as it was written.
+
+    Raises:
+        ValueError: If the rule is unknown, or if the flag asks for an
+            exclusion that the rule says not to make. Silently preferring
+            one of two contradicting settings would leave a run whose
+            neighbourhood nobody chose.
+    """
+    rule: str | None = getattr(cfg, "self_exclusion", None)
+    flag = bool(getattr(cfg, "exclude_self_neighbour", False))
+    if rule is None:
+        return "sequence" if flag else "none"
+    if rule not in SELF_EXCLUSION_RULES:
+        raise ValueError(f"self_exclusion must be one of {SELF_EXCLUSION_RULES}, not {rule!r}")
+    if flag and rule == "none":
+        raise ValueError(
+            "exclude_self_neighbour asks to exclude the query and self_exclusion says "
+            "'none'; set one of them, not both"
+        )
+    return rule
+
+
+def extra_neighbours_for_accession(
+    query_accessions: Sequence[str], reference_accessions: Sequence[str]
+) -> int:
+    """How many neighbours beyond k the by-accession drop can cost: the most
+    times any one query's own accession appears in the bank (1 when it is in
+    the bank once, 0 when it is not)."""
+    in_bank = collections.Counter(reference_accessions)
+    return max((in_bank[a] for a in query_accessions), default=0)
+
+
+def without_own_accession(
+    neighbours: Sequence[Sequence[tuple[str, float]]],
+    query_accessions: Sequence[str],
+    k: int,
+) -> list[list[tuple[str, float]]]:
+    """Drop the neighbours that ARE the query, by accession, keep its twins,
+    then cut to k.
+
+    Raises:
+        ValueError: If the two sequences are not the same length, for the
+            reason ``without_own_sequence`` gives.
+    """
+    if len(neighbours) != len(query_accessions):
+        raise ValueError(
+            f"{len(neighbours)} neighbour lists for {len(query_accessions)} "
+            f"queries. They are paired by position, so an unequal pairing gives "
+            f"each query somebody else's neighbourhood."
+        )
+    return [
+        [pair for pair in top if pair[0] != accession][:k]
+        for top, accession in zip(neighbours, query_accessions, strict=True)
+    ]
+
+
+def self_exclusion_margin(
     cfg: Any, queries: Queries, reference_accessions: list[str]
 ) -> int:
-    """Extra neighbours to ask for so the self-drop does not cost depth."""
-    if not cfg.exclude_self_neighbour or cfg.sequence_keys is None:
-        return 0
-    return extra_neighbours_for(
-        queries.accessions, reference_accessions, cfg.sequence_keys
-    )
+    """Extra neighbours to ask for so the configured drop does not cost depth.
+
+    The margin of each rule is the one its drop needs, so the two always agree.
+    """
+    rule = resolve_self_exclusion(cfg)
+    if rule == "accession":
+        return extra_neighbours_for_accession(queries.accessions, reference_accessions)
+    if rule == "sequence" and cfg.sequence_keys is not None:
+        return extra_neighbours_for(
+            queries.accessions, reference_accessions, cfg.sequence_keys
+        )
+    return 0
 
 
-def drop_own_sequence(
+def drop_self(
     cfg: Any, hits: list[list[tuple[str, float]]], queries: Queries
 ) -> list[list[tuple[str, float]]]:
-    """Remove every neighbour carrying the query's own sequence, then cut to k."""
-    if not cfg.exclude_self_neighbour or cfg.sequence_keys is None:
-        return hits
-    return without_own_sequence(hits, queries.accessions, cfg.k, cfg.sequence_keys)
+    """Remove the query from its own neighbourhood by the configured rule, then cut to k."""
+    rule = resolve_self_exclusion(cfg)
+    if rule == "accession":
+        return without_own_accession(hits, queries.accessions, cfg.k)
+    if rule == "sequence" and cfg.sequence_keys is not None:
+        return without_own_sequence(hits, queries.accessions, cfg.k, cfg.sequence_keys)
+    return hits
+
+
+# The names the step used before the rule became a parameter; they follow it now.
+self_margin = self_exclusion_margin
+drop_own_sequence = drop_self

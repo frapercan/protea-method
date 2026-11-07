@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from protea_method._self_by_sequence import Queries, drop_own_sequence, self_margin
+from protea_method._self_by_sequence import Queries, drop_self, self_exclusion_margin
 from protea_method.feature_enricher import ASPECT_CODES
 from protea_method.knn_search import search_knn
 
@@ -92,13 +92,13 @@ def unified_knn(
         queries.embeddings,
         reference_embeddings,
         reference_accessions,
-        k=cfg.k + self_margin(cfg, queries, reference_accessions),
+        k=cfg.k + self_exclusion_margin(cfg, queries, reference_accessions),
         distance_threshold=cfg.distance_threshold,
         backend=cfg.backend,
         metric=cfg.metric,
         pre_normalized=cfg.pre_normalized,
     )
-    hits = drop_own_sequence(cfg, hits, queries)
+    hits = drop_self(cfg, hits, queries)
     return {"": hits}, {"": _build_go_map(hits, annotations)}
 
 
@@ -126,7 +126,7 @@ def aspect_separated_knn(
             neighbors_by_aspect[aspect] = [[] for _ in range(n_queries)]
             go_map_by_aspect[aspect] = {}
             continue
-        margin = self_margin(cfg, queries, acc_subset)
+        margin = self_exclusion_margin(cfg, queries, acc_subset)
         hits = search_knn(
             queries.embeddings,
             emb_subset,
@@ -137,7 +137,7 @@ def aspect_separated_knn(
             metric=cfg.metric,
             pre_normalized=cfg.pre_normalized,
         )
-        hits = drop_own_sequence(cfg, hits, queries)
+        hits = drop_self(cfg, hits, queries)
         neighbors_by_aspect[aspect] = hits
         go_map_by_aspect[aspect] = _build_go_map(hits, annotations)
     return neighbors_by_aspect, go_map_by_aspect
