@@ -3,8 +3,13 @@
 Backends
 --------
 numpy
-    Exact brute-force cosine or L2 distance via matrix multiplication.
-    No dependencies beyond NumPy. Suitable for reference sets up to ~100K.
+    Exact brute-force cosine or L2 distance, in two passes
+    (:mod:`protea_method._exact_two_pass`): a float32 pass shortlists every
+    reference that can be among the k nearest, within a proven error margin,
+    and the float64 pass decides among them by distance and then by position.
+    The first pass runs on a CUDA card when torch sees one
+    (``PROTEA_METHOD_EXACT_FIRST_PASS_DEVICE``: ``auto``, ``cuda`` or ``cpu``);
+    the neighbours are the same on either device.
 
 faiss
     Wraps the FAISS library (``faiss-cpu``).
@@ -65,13 +70,14 @@ from typing import Any
 import numpy as np
 
 from protea_method._chunked_topk import TorchSearch, chunked_topk
-from protea_method._order_invariance import (
-    cosine_distance_f64,
-    l2_distance_f64,
-    warn_if_order_dependent,
-)
+from protea_method._exact_two_pass import exact_top_k, top_k_by_distance_then_position
+from protea_method._order_invariance import warn_if_order_dependent
 
 logger = logging.getLogger(__name__)
+
+#: The selection rule lives with the two passes, under the name its callers and
+#: tests have always imported from here.
+_top_k_by_distance_then_position = top_k_by_distance_then_position
 
 
 def _numpy_query_chunk_default() -> int:
@@ -201,43 +207,6 @@ def search_knn(
     return hits
 
 
-def _top_k_by_distance_then_position(dist: np.ndarray, k: int) -> list[np.ndarray]:
-    """The k nearest columns of each row, equal distances ordered by column.
-
-    WHY. ``np.argpartition`` followed by a quicksort ``argsort`` puts EQUAL
-    values in an order that comes from the partition's internal pivots, and
-    those depend on every other value in the row. Two runs of the same recipe
-    on a byte-identical bank (exploration 1, 2026-11-05) gave identical tied
-    distances in a different order, because some unrelated column of the row
-    moved by one float32 ulp between them, and 9.7 % of the stored rows
-    changed: which donor represents a term, its k position, and at the k-th
-    slot which donors are admitted at all. Ties are common, not a corner: 91
-    per cent of queries have neighbours at distance ~0, themselves or twins
-    carrying the same sequence.
-
-    So the k-th smallest distance is found first, every column at or below it
-    is a candidate, and the candidates are ordered by distance and then by
-    column position with a stable ``lexsort``. Which donors are chosen and in
-    what order then depends only on the candidates' own distances and
-    positions. The bank is ordered by accession (``COLLATE "C"``) and each
-    aspect's view keeps that order, so the position IS the accession: equal
-    distances are broken by accession, the same way on every run.
-    """
-    n_rows, n_cols = dist.shape
-    if k >= n_cols:
-        kth = dist.max(axis=1)
-    else:
-        kth = np.partition(dist, k - 1, axis=1)[:, k - 1]
-    out: list[np.ndarray] = []
-    for r in range(n_rows):
-        row = dist[r]
-        cand = np.flatnonzero(row <= kth[r])
-        # lexsort sorts by the LAST key first: distance, then column position.
-        order = np.lexsort((cand, row[cand]))
-        out.append(cand[order[:k]])
-    return out
-
-
 def _search_numpy(
     Q: np.ndarray,
     R: np.ndarray,
@@ -248,16 +217,12 @@ def _search_numpy(
     metric: str,
     pre_normalized: bool = False,
 ) -> list[list[tuple[str, float]]]:
-    """Exact brute-force search via chunked matrix multiplication.
+    """Exact brute-force search, in two passes (:mod:`protea_method._exact_two_pass`).
 
-    Chunk-invariant work (R normalisation for cosine, ``||R||^2`` for L2,
-    and the transposed ``R.T`` view) is computed once and reused across
-    chunks.
-
-    Top-k selection finds the k-th distance with ``np.partition`` (O(n_refs)
-    per query) and orders only the candidates at or below it, by distance and
-    then by column position; see :func:`_top_k_by_distance_then_position` for
-    why the order of equal distances has to be fixed explicitly.
+    ``PROTEA_METHOD_NUMPY_QUERY_CHUNK`` queries at a time bound the first pass's
+    distance matrix when it runs on the CPU. Equal distances are ordered by bank
+    position (:func:`_top_k_by_distance_then_position`), and the threshold applies
+    after the selection.
     """
     if metric == "cosine":
         if pre_normalized:
@@ -267,35 +232,20 @@ def _search_numpy(
         R2 = None
     elif metric == "l2":
         R_ready = R
-        R2 = (R**2).sum(axis=1)  # shape (n_refs,), reused by every chunk
+        R2 = (R**2).sum(axis=1)  # shape (n_refs,), the exact path's own ||R||^2
     else:
         raise ValueError(f"Unknown metric: {metric!r}. Choose 'cosine' or 'l2'.")
 
-    n_refs = R.shape[0]
-    k_eff = min(k, n_refs)
-
+    k_eff = min(k, R.shape[0])
+    if metric == "cosine":
+        Q = Q / (np.linalg.norm(Q, axis=1, keepdims=True) + 1e-9)
     results: list[list[tuple[str, float]]] = []
-    n_queries = Q.shape[0]
-    query_chunk = _numpy_query_chunk_default()
-
-    for start in range(0, n_queries, query_chunk):
-        Q_chunk = Q[start : start + query_chunk]
-        if metric == "cosine":
-            Q_n = Q_chunk / (np.linalg.norm(Q_chunk, axis=1, keepdims=True) + 1e-9)
-            dist = cosine_distance_f64(Q_n, R_ready)
-        else:  # l2
-            dist = l2_distance_f64(Q_chunk, R_ready, R2)
-
-        n_rows = dist.shape[0]
-        top_per_row = _top_k_by_distance_then_position(dist, k_eff)
-
-        for row_i in range(n_rows):
-            row = dist[row_i]
-            top = top_per_row[row_i]
-            if distance_threshold is not None:
-                top = top[row[top] <= distance_threshold]
-            results.append([(ref_accessions[int(i)], float(row[i])) for i in top])
-        del dist
+    hits = exact_top_k(Q, R_ready, R2, k_eff, metric=metric, cpu_rows=_numpy_query_chunk_default())
+    for top, dist in hits:
+        if distance_threshold is not None:
+            keep = dist <= distance_threshold
+            top, dist = top[keep], dist[keep]
+        results.append([(ref_accessions[int(i)], float(d)) for i, d in zip(top, dist, strict=True)])
     return results
 
 
