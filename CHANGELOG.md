@@ -17,6 +17,12 @@ downstream LightGBM booster.
 - `cutoff` module wired into the API reference.
 - Optional `docs` Poetry dependency group (sphinx + alabaster) and a
   `docs` CI workflow that builds with warnings treated as errors.
+- The self-exclusion rule `"accession_after_retrieval"`, LAFA's own search:
+  no margin, the k neighbours retrieved from the bank as it stands, then the
+  query's own accession dropped, so a query in the bank keeps k - 1
+  neighbours and any other keeps k, at the positions the `"accession"` rule
+  gives them. It needs `exclude_self_neighbour=True`, as the contract's
+  payloads require.
 
 ### Changed
 - Deduplicated the lambdarank sigmoid-calibration logic shared by

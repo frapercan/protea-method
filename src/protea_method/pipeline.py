@@ -118,7 +118,11 @@ class PredictConfig:
         only, its twins kept, for a consumer that reads the query's own
         state as input; the author, 2026-11-07). Unset, the flag above
         decides, as it always did. The search's extra margin follows the
-        same rule, so the drop never costs depth.
+        same rule, so the drop never costs depth. The exception is
+        "accession_after_retrieval", LAFA's own search: no margin, the
+        query's accession dropped after the k neighbours are retrieved, so a
+        query in the bank keeps k - 1 and any other keeps k. It needs
+        ``exclude_self_neighbour`` True.
     sequence_keys:
         Accession to sequence identity for the reference bank. When
         given, every row carries a ``sequence_rank`` numbering its

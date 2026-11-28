@@ -31,6 +31,16 @@ rule is a parameter, ``self_exclusion``: "none", "sequence" or "accession".
 Each rule has its own margin, and the margin and the drop must move together:
 mixing a by-sequence margin with a by-accession drop, or the reverse, once left
 887 donor holes in 264 of 14,032 queries.
+
+AFTER RETRIEVAL, WHERE THE COMPARISON IS LAFA'S OWN SEARCH. LAFA's embedding
+baseline (democafa) retrieves its depth from the reference as it stands and
+then removes the query's own accession, so a query that is one of its
+references keeps one neighbour fewer and any other keeps them all. The rule
+"accession_after_retrieval" does exactly that: its margin is zero and its drop
+is the accession rule's, so it leaves the neighbours the accession rule leaves,
+at the same positions, one fewer when the query was retrieved. It exists for
+the literal LAFA and CAFA5 baselines, whose depth depends on whether the query
+is a reference; the platform's own arms keep a margin that costs no depth.
 """
 
 from __future__ import annotations
@@ -45,7 +55,7 @@ if TYPE_CHECKING:
 
 from protea_method._sequence_depth import SequenceIdentityMissingError
 
-SELF_EXCLUSION_RULES = ("none", "sequence", "accession")
+SELF_EXCLUSION_RULES = ("none", "sequence", "accession", "accession_after_retrieval")
 
 __all__ = (
     "SELF_EXCLUSION_RULES",
@@ -159,17 +169,20 @@ class Queries:
 
 
 def resolve_self_exclusion(cfg: Any) -> str:
-    """The rule a configuration asks for: "none", "sequence" or "accession".
+    """The rule a configuration asks for, one of :data:`SELF_EXCLUSION_RULES`.
 
     ``self_exclusion`` decides when it is set. When it is not, the older flag
     keeps its meaning: ``exclude_self_neighbour`` True is "sequence", False is
     "none", so every stored run reads as it was written.
 
     Raises:
-        ValueError: If the rule is unknown, or if the flag asks for an
-            exclusion that the rule says not to make. Silently preferring
-            one of two contradicting settings would leave a run whose
-            neighbourhood nobody chose.
+        ValueError: If the rule is unknown, or if the flag contradicts it:
+            the flag asks for an exclusion the rule says not to make, or the
+            rule is "accession_after_retrieval", which removes the query, and
+            the flag says the query may stay. Silently preferring one of two
+            contradicting settings would leave a run whose neighbourhood
+            nobody chose; the contract refuses the same two payloads. The
+            older rules keep deciding over an unset flag, as they always did.
     """
     rule: str | None = getattr(cfg, "self_exclusion", None)
     flag = bool(getattr(cfg, "exclude_self_neighbour", False))
@@ -181,6 +194,12 @@ def resolve_self_exclusion(cfg: Any) -> str:
         raise ValueError(
             "exclude_self_neighbour asks to exclude the query and self_exclusion says "
             "'none'; set one of them, not both"
+        )
+    if not flag and rule == "accession_after_retrieval":
+        raise ValueError(
+            "self_exclusion 'accession_after_retrieval' removes the query from its own "
+            "neighbourhood and exclude_self_neighbour says it may stay; set "
+            "exclude_self_neighbour to true"
         )
     return rule
 
@@ -225,6 +244,9 @@ def self_exclusion_margin(
     """Extra neighbours to ask for so the configured drop does not cost depth.
 
     The margin of each rule is the one its drop needs, so the two always agree.
+    "accession_after_retrieval" asks for none: its drop is meant to cost the
+    depth, as LAFA's search does, so the search returns k from the pool as it
+    stands and the query leaves afterwards.
     """
     rule = resolve_self_exclusion(cfg)
     if rule == "accession":
@@ -239,9 +261,15 @@ def self_exclusion_margin(
 def drop_self(
     cfg: Any, hits: list[list[tuple[str, float]]], queries: Queries
 ) -> list[list[tuple[str, float]]]:
-    """Remove the query from its own neighbourhood by the configured rule, then cut to k."""
+    """Remove the query from its own neighbourhood by the configured rule, then cut to k.
+
+    "accession" and "accession_after_retrieval" drop the same neighbours, the
+    query's own accession; they differ only in the margin the search was given,
+    so after retrieval a query that was retrieved keeps k - 1 neighbours and
+    any other keeps the k it was given.
+    """
     rule = resolve_self_exclusion(cfg)
-    if rule == "accession":
+    if rule in ("accession", "accession_after_retrieval"):
         return without_own_accession(hits, queries.accessions, cfg.k)
     if rule == "sequence" and cfg.sequence_keys is not None:
         return without_own_sequence(hits, queries.accessions, cfg.k, cfg.sequence_keys)
